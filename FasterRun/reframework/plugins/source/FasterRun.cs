@@ -395,7 +395,7 @@ public sealed class FasterRun : ModBase
     {
         _runSpeed = AddFloatConfig(
             "Run speed",
-            13.5f,
+            6.75f,
             0.1f,
             50.0f,
             "%.2f",
