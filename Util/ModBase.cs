@@ -39,6 +39,7 @@ public sealed class ModConfig<T> : IModConfigEntry
 public abstract class ModBase
 {
     private readonly System.Collections.Generic.List<IModConfigEntry> _configEntries = new();
+    private int _errorReported;
 
     protected ModBase(string modName, string modVersion)
     {
@@ -124,6 +125,36 @@ public abstract class ModBase
             Hexa.NET.ImGui.ImGui.TreePop();
         }
     }
+
+    protected static T GetManagedObject<T>(ulong address)
+        where T : class
+    {
+        if (!REFrameworkNET.ManagedObject.IsManagedObject(address))
+        {
+            return null;
+        }
+
+        return REFrameworkNET.ManagedObject.ToManagedObject(address)?.As<T>();
+    }
+
+    protected static T GetHookArgument<T>(
+        System.ReadOnlySpan<ulong> args,
+        int index)
+        where T : class =>
+        index >= 0 && index < args.Length
+            ? GetManagedObject<T>(args[index])
+            : null;
+
+    protected void LogErrorOnce(string operation, System.Exception exception)
+    {
+        if (System.Threading.Interlocked.Exchange(ref _errorReported, 1) == 0)
+        {
+            Log($"{operation}: {exception}", ModLogLevel.Error);
+        }
+    }
+
+    protected void ResetErrorReporting() =>
+        System.Threading.Volatile.Write(ref _errorReported, 0);
 
     protected void Log(string message, ModLogLevel level = ModLogLevel.Info)
     {
