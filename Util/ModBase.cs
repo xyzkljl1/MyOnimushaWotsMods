@@ -227,7 +227,7 @@ public abstract class ModBase
                 _configEntries[index].Draw($"{ModName}.Config.{index}");
             }
 
-            if (Hexa.NET.ImGui.ImGui.Button($"Reset to defaults##{ModName}.Config.Reset"))
+            if (Hexa.NET.ImGui.ImGui.Button($"reset settings##{ModName}.Config.Reset"))
             {
                 foreach (var entry in _configEntries)
                 {
