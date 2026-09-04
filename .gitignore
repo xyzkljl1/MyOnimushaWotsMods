@@ -1,1 +1,4 @@
 /*.7z
+/Updater/bin/
+/Updater/obj/
+/Updater/updater.json
