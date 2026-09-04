@@ -15,12 +15,15 @@ public interface IModConfigEntry
 
     void Draw(string id);
 
+    void Reset();
+
     bool TryLoad(System.Text.Json.JsonElement value);
 }
 
 public sealed class ModConfig<T> : IModConfigEntry
 {
     private readonly string _name;
+    private readonly T _defaultValue;
     private readonly ModConfigRenderer<T> _renderer;
     private readonly System.Action _onChanged;
 
@@ -33,6 +36,7 @@ public sealed class ModConfig<T> : IModConfigEntry
     {
         Key = key;
         _name = name;
+        _defaultValue = defaultValue;
         _renderer = renderer;
         _onChanged = onChanged;
         Value = defaultValue;
@@ -53,6 +57,8 @@ public sealed class ModConfig<T> : IModConfigEntry
             _onChanged();
         }
     }
+
+    public void Reset() => Value = _defaultValue;
 
     public bool TryLoad(System.Text.Json.JsonElement value)
     {
@@ -220,6 +226,17 @@ public abstract class ModBase
             {
                 _configEntries[index].Draw($"{ModName}.Config.{index}");
             }
+
+            if (Hexa.NET.ImGui.ImGui.Button($"Reset to defaults##{ModName}.Config.Reset"))
+            {
+                foreach (var entry in _configEntries)
+                {
+                    entry.Reset();
+                }
+
+                MarkConfigDirty();
+                SaveConfig();
+            }
         }
         finally
         {
@@ -278,11 +295,6 @@ public abstract class ModBase
         {
             var values = new System.Collections.Generic.Dictionary<string, object>(
                 System.StringComparer.Ordinal);
-            foreach (var savedValue in _savedConfig)
-            {
-                values[savedValue.Key] = savedValue.Value;
-            }
-
             foreach (var entry in _configEntries)
             {
                 values[entry.Key] = entry.SerializedValue;
