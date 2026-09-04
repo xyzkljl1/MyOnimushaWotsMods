@@ -22,7 +22,8 @@
   "NEXUSMODS_API_KEY": "",
   "mods": {
     "ShowHP": {
-      "modId": "Nexus-v3-global-mod-id"
+      "modId": "Nexus-v3-global-mod-id",
+      "description": "本版本的文件说明"
     }
   }
 }
@@ -33,19 +34,27 @@
 `updater.json` 已被 `.gitignore` 排除，但其中的密钥仍是明文，不能分享、提交或
 复制到日志中。
 
+Codex 执行某个 mod 的发布任务时，如果 `mods` 中没有该 mod 对应的对象，应自行在
+本地 `updater.json` 中添加。若对象中的 `modId` 缺失、为空或仍是占位符，应根据用户
+提供的 Nexus Mods 页面地址、游戏内编号或其它足以确定目标的信息查询并填写正确的
+全局 `modId`；信息不足以唯一确定目标时必须先询问用户。更新配置时只能修改对应的
+`mods` 条目，必须保留且不得显示、记录或覆盖现有的 `NEXUSMODS_API_KEY`。
+
 这里的 `modId` 是 v3 API 的全局 ID，不一定等于页面 URL 中的游戏内编号；可按
 Nexus 官方说明通过 `GET /v3/games/{game_domain}/mods/{game_scoped_id}` 查询响应中的
 `id`。
 
 每个模组只有 `modId` 是必填项。上传开始前，工具会调用
 `GET /mods/{modId}/files`，筛选 `is_active == true` 的文件，并只在结果恰好为一个时
-继续。没有有效文件或存在多个有效文件都会直接终止，以免更新错误文件。历史版本
-属于同一个持久化文件，不影响该选择。
+继续；随后查询该文件的版本，并要求恰好存在一个 `is_primary == true` 的当前主要
+版本。没有有效文件、存在多个有效文件或主要版本不唯一都会在上传前终止。
 
-可选配置字段包括 `displayName`、`description`、`fileCategory`、`archiveExistingVersion`、
-`primaryModManagerDownload`、`allowModManagerDownload` 和
-`showRequirementsPopUp`。不填写时分别使用自动名称、`main` 分类和 Nexus 默认行为。
-`update_mod_version` 始终启用，因此不提供关闭选项。
+新版本强制沿用当前主要版本的显示名称和文件分类，配置不能修改这两项。唯一的可选
+配置字段是 `description`，用于设置新文件版本的说明；留空或不填写时不发送文件说明。
+Changelog 由命令行的 `--changelog-file` 提供。工具不会发送归档旧版本、Mod Manager
+下载许可或依赖弹窗等控制字段。新文件版本固定设置
+`primary_mod_manager_download = true`，使其成为主要版本；该行为不可配置。
+`update_mod_version` 始终启用。
 
 ## 使用
 

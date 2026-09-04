@@ -2,7 +2,8 @@
   "NEXUSMODS_API_KEY": "",
   "mods": {
     "ShowHP": {
-      "modId": "replace-with-global-mod-id"
+      "modId": "replace-with-global-mod-id",
+      "description": ""
     }
   }
 }

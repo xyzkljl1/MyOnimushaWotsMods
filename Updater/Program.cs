@@ -7,9 +7,6 @@ namespace NexusUpdater;
 internal static class Program
 {
     private static readonly Regex VersionPattern = new("^[a-zA-Z0-9.-]+$", RegexOptions.CultureInvariant);
-    private static readonly Regex DisplayNamePattern = new("^[a-zA-Z0-9 _'().-]+$", RegexOptions.CultureInvariant);
-    private static readonly HashSet<string> FileCategories =
-        new(["main", "optional", "miscellaneous"], StringComparer.Ordinal);
 
     private static readonly JsonSerializerOptions ConfigJsonOptions = new()
     {
@@ -110,7 +107,7 @@ internal static class Program
             throw new InvalidOperationException("changelog 文件为空。");
         }
 
-        ValidateReleaseMetadata(modName, version, changelog, target);
+        ValidateReleaseMetadata(version, changelog, target);
 
         var package = new ModPackage(options.Mod, modName, version, archivePath, changelog, target);
         return new PreparedUpdate(package, config.NexusModsApiKey);
@@ -160,31 +157,16 @@ internal static class Program
     }
 
     private static void ValidateReleaseMetadata(
-        string modName,
         string version,
         string changelog,
         ModTarget target)
     {
         ValidateConfiguredId(target.ModId, "modId");
-        if (!FileCategories.Contains(target.FileCategory))
-        {
-            throw new InvalidOperationException(
-                "fileCategory 只能是 main、optional 或 miscellaneous。");
-        }
 
         if (version.Length > 50 || !VersionPattern.IsMatch(version))
         {
             throw new InvalidOperationException(
                 "版本号必须不超过 50 个字符，并且只能包含 ASCII 字母、数字、点和连字符。");
-        }
-
-        var displayName = string.IsNullOrWhiteSpace(target.DisplayName)
-            ? $"{modName} {version}"
-            : target.DisplayName;
-        if (displayName.Length > 50 || !DisplayNamePattern.IsMatch(displayName))
-        {
-            throw new InvalidOperationException(
-                "文件显示名称必须不超过 50 个字符，并且只能包含 ASCII 字母、数字、空格、下划线、撇号、括号、点和连字符。");
         }
 
         if (changelog.Length > 65_535)

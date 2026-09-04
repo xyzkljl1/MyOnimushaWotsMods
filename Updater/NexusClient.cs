@@ -13,6 +13,9 @@ internal sealed class NexusClient : IDisposable
     private const string ApiBaseUrl = "https://api.nexusmods.com/v3/";
     private const int MaximumErrorBodyLength = 4096;
 
+    private static readonly HashSet<string> WritableFileCategories =
+        new(["main", "optional", "miscellaneous"], StringComparer.Ordinal);
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
@@ -47,8 +50,9 @@ internal sealed class NexusClient : IDisposable
 
     public async Task<PublishResult> PublishAsync(ModPackage package, CancellationToken cancellationToken)
     {
-        var fileId = await ResolveActiveFileIdAsync(package.Target.ModId, cancellationToken);
-        Console.WriteLine($"已自动选择唯一的有效 Nexus 文件：{fileId}。");
+        var existingFile = await ResolveExistingFileAsync(package.Target.ModId, cancellationToken);
+        Console.WriteLine(
+            $"已自动选择 Nexus 文件 {existingFile.Id}，沿用名称“{existingFile.Name}”和分类 {existingFile.Category}。");
 
         var archive = new FileInfo(package.ArchivePath);
         var upload = await CreateMultipartUploadAsync(archive, cancellationToken);
@@ -71,7 +75,7 @@ internal sealed class NexusClient : IDisposable
         string versionId;
         try
         {
-            versionId = await CreateFileVersionAsync(upload.Id, fileId, package, cancellationToken);
+            versionId = await CreateFileVersionAsync(upload.Id, existingFile, package, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -100,7 +104,7 @@ internal sealed class NexusClient : IDisposable
         _storageClient.Dispose();
     }
 
-    private async Task<string> ResolveActiveFileIdAsync(
+    private async Task<ExistingFile> ResolveExistingFileAsync(
         string modId,
         CancellationToken cancellationToken)
     {
@@ -124,7 +128,7 @@ internal sealed class NexusClient : IDisposable
             .Select(file => GetRequiredText(file, "id"))
             .ToArray();
 
-        return activeFileIds.Length switch
+        var fileId = activeFileIds.Length switch
         {
             1 => activeFileIds[0],
             0 => throw new InvalidOperationException(
@@ -132,6 +136,57 @@ internal sealed class NexusClient : IDisposable
             _ => throw new InvalidOperationException(
                 $"该 Nexus 模组有 {activeFileIds.Length} 个有效文件；为避免更新错误文件，已在上传前终止。")
         };
+
+        using var versionsDocument = await SendApiAsync(
+            HttpMethod.Get,
+            $"mod-files/{Uri.EscapeDataString(fileId)}/versions",
+            body: null,
+            HttpStatusCode.OK,
+            cancellationToken);
+
+        var versionsData = GetRequiredProperty(versionsDocument.RootElement, "data");
+        var versions = GetRequiredProperty(versionsData, "versions");
+        if (versions.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("Nexus 响应字段 versions 不是数组。");
+        }
+
+        var primaryVersions = versions
+            .EnumerateArray()
+            .Where(version => GetOptionalBoolean(version, "is_primary"))
+            .ToArray();
+        if (primaryVersions.Length != 1)
+        {
+            throw new InvalidOperationException(
+                $"有效文件中应恰好有一个当前主要版本，实际找到 {primaryVersions.Length} 个；已在上传前终止。");
+        }
+
+        var primaryVersion = primaryVersions[0];
+        var existingFile = new ExistingFile(
+            fileId,
+            GetRequiredText(primaryVersion, "name"),
+            GetRequiredText(primaryVersion, "category"));
+        ValidateExistingFile(existingFile);
+        return existingFile;
+    }
+
+    private static void ValidateExistingFile(ExistingFile file)
+    {
+        if (file.Name.Length > 50 || file.Name.Any(character =>
+            !((character >= 'a' && character <= 'z') ||
+              (character >= 'A' && character <= 'Z') ||
+              (character >= '0' && character <= '9') ||
+              character is ' ' or '_' or '\'' or '(' or ')' or '.' or '-')))
+        {
+            throw new InvalidOperationException(
+                "当前文件显示名称不符合 Nexus 新版本接口的要求；工具不会修改或截断它，已在上传前终止。");
+        }
+
+        if (!WritableFileCategories.Contains(file.Category))
+        {
+            throw new InvalidOperationException(
+                $"当前文件分类 {file.Category} 无法用于新版本；工具不会替换分类，已在上传前终止。");
+        }
     }
 
     private async Task<MultipartUpload> CreateMultipartUploadAsync(
@@ -347,27 +402,22 @@ internal sealed class NexusClient : IDisposable
 
     private async Task<string> CreateFileVersionAsync(
         string uploadId,
-        string fileId,
+        ExistingFile existingFile,
         ModPackage package,
         CancellationToken cancellationToken)
     {
         var target = package.Target;
         using var document = await SendApiAsync(
             HttpMethod.Post,
-            $"mod-files/{Uri.EscapeDataString(fileId)}/versions",
+            $"mod-files/{Uri.EscapeDataString(existingFile.Id)}/versions",
             new
             {
                 upload_id = uploadId,
-                name = string.IsNullOrWhiteSpace(target.DisplayName)
-                    ? $"{package.Name} {package.Version}"
-                    : target.DisplayName,
+                name = existingFile.Name,
                 description = string.IsNullOrWhiteSpace(target.Description) ? null : target.Description,
                 version = package.Version,
-                file_category = target.FileCategory,
-                archive_existing_file = target.ArchiveExistingVersion,
-                primary_mod_manager_download = target.PrimaryModManagerDownload,
-                allow_mod_manager_download = target.AllowModManagerDownload,
-                show_requirements_pop_up = target.ShowRequirementsPopUp,
+                file_category = existingFile.Category,
+                primary_mod_manager_download = true,
                 update_mod_version = true
             },
             HttpStatusCode.Created,
@@ -487,6 +537,22 @@ internal sealed class NexusClient : IDisposable
         };
     }
 
+    private static bool GetOptionalBoolean(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return false;
+        }
+
+        return property.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => throw new InvalidOperationException(
+                $"Nexus 响应字段 {propertyName} 不是布尔值。")
+        };
+    }
+
     private static Uri GetRequiredHttpsUrl(JsonElement element, string propertyName) =>
         ReadHttpsUrl(GetRequiredProperty(element, propertyName));
 
@@ -508,4 +574,6 @@ internal sealed class NexusClient : IDisposable
         Uri CompleteUrl);
 
     private sealed record UploadedPart(int PartNumber, string ETag);
+
+    private sealed record ExistingFile(string Id, string Name, string Category);
 }

@@ -15,3 +15,7 @@
 - If an isolated worktree has no local configuration, use `--config E:\OtherGame\Onimusha\MyOnimushaWotsMods\Updater\updater.json` to reference the main workspace configuration. Never copy that configuration into a worktree.
 - Never print, echo, log, commit, or pass `NEXUSMODS_API_KEY` on the command line. Do not expose presigned upload URLs.
 - Always run NexusUpdater with `--dry-run` first. Perform a real upload only when the user explicitly requests it.
+- Every uploaded Nexus file version must become the primary version. NexusUpdater enforces this with a fixed `primary_mod_manager_download = true`; do not make it configurable.
+- Do not change a mod's version merely because its changes are committed or pushed.
+- Before every Nexus Mods upload, verify that the version in the mod's `modinfo.ini` has never been used by any existing version of the target Nexus file. Never upload two files with the same version.
+- Change the local `modinfo.ini` version only after Nexus confirms that the new file version was created successfully. That change prepares the next release and must use a version not already present on Nexus; if the next version is not unambiguous, ask the user instead of guessing.

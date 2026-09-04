@@ -13,13 +13,7 @@ internal sealed class UpdaterConfig
 internal sealed class ModTarget
 {
     public string ModId { get; init; } = "";
-    public string? DisplayName { get; init; }
     public string? Description { get; init; }
-    public string FileCategory { get; init; } = "main";
-    public bool ArchiveExistingVersion { get; init; }
-    public bool? PrimaryModManagerDownload { get; init; }
-    public bool? AllowModManagerDownload { get; init; }
-    public bool? ShowRequirementsPopUp { get; init; }
 }
 
 internal sealed record ModPackage(
