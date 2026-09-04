@@ -172,7 +172,7 @@ public sealed class AutoRun : ModBase
     [ThreadStatic]
     private static bool _forceDashThisUpdate;
 
-    private AutoRun() : base("AutoRun", "1.1")
+    private AutoRun() : base("AutoRun", "1.0")
     {
         _sprintDelay = AddFloatConfig(
             "Sprint delay (seconds)",
