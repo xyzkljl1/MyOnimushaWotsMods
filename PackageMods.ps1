@@ -82,14 +82,25 @@ foreach ($mod in $mods) {
     $archiveName = "$modName-$modVersion.7z"
     $archivePath = Join-Path $repositoryRoot $archiveName
     $reframeworkPath = Join-Path $mod.FullName 'reframework'
+    $archiveInputs = @('modinfo.ini', 'reframework')
+    $configExclusions = @(
+        "-x!reframework\data\$modName.json"
+        "-x!reframework\data\$modName.json.tmp"
+    )
 
     if (-not (Test-Path -LiteralPath $reframeworkPath -PathType Container)) {
         throw "Missing reframework directory in mod: $($mod.FullName)"
     }
 
+    foreach ($optionalDirectory in @('natives', 'pak_mods')) {
+        if (Test-Path -LiteralPath (Join-Path $mod.FullName $optionalDirectory) -PathType Container) {
+            $archiveInputs += $optionalDirectory
+        }
+    }
+
     Push-Location $mod.FullName
     try {
-        & $sevenZipCommand a -t7z -mx=9 -y $archivePath 'modinfo.ini' 'reframework'
+        & $sevenZipCommand a -t7z -mx=9 -y @configExclusions $archivePath @archiveInputs
         if ($LASTEXITCODE -ne 0) {
             throw "7-Zip failed for $($mod.Name) with exit code $LASTEXITCODE."
         }
