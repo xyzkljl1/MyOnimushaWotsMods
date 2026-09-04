@@ -24,7 +24,10 @@ internal sealed record ModPackage(
     string Changelog,
     ModTarget Target);
 
-internal sealed record PublishResult(string UploadId, string VersionId);
+internal sealed record PublishResult(
+    string UploadId,
+    string PublishedId,
+    bool CreatedInitialFile);
 
 internal sealed record CommandLineOptions(
     string Mod,

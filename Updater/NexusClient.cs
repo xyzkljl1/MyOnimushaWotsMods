@@ -50,9 +50,17 @@ internal sealed class NexusClient : IDisposable
 
     public async Task<PublishResult> PublishAsync(ModPackage package, CancellationToken cancellationToken)
     {
-        var existingFile = await ResolveExistingFileAsync(package.Target.ModId, cancellationToken);
-        Console.WriteLine(
-            $"已自动选择 Nexus 文件 {existingFile.Id}，沿用名称“{existingFile.Name}”和分类 {existingFile.Category}。");
+        var target = await ResolveUploadTargetAsync(package, cancellationToken);
+        if (target.IsInitial)
+        {
+            Console.WriteLine(
+                $"该 Nexus 模组还没有文件，将创建首个主要文件，名称“{target.Name}”，分类 {target.Category}。");
+        }
+        else
+        {
+            Console.WriteLine(
+                $"已自动选择 Nexus 文件 {target.FileId}，沿用名称“{target.Name}”和分类 {target.Category}。");
+        }
 
         var archive = new FileInfo(package.ArchivePath);
         var upload = await CreateMultipartUploadAsync(archive, cancellationToken);
@@ -68,19 +76,21 @@ internal sealed class NexusClient : IDisposable
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             throw new PartialPublishException(
-                $"文件版本尚未创建，但 Nexus 上传任务 {upload.Id} 可能已经保留；请先检查 Nexus 后再重试。",
+                $"Nexus 文件尚未创建或更新，但上传任务 {upload.Id} 可能已经保留；请先检查 Nexus 后再重试。",
                 exception);
         }
 
-        string versionId;
+        string publishedId;
         try
         {
-            versionId = await CreateFileVersionAsync(upload.Id, existingFile, package, cancellationToken);
+            publishedId = target.IsInitial
+                ? await CreateInitialFileAsync(upload.Id, target, package, cancellationToken)
+                : await CreateFileVersionAsync(upload.Id, target, package, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             throw new PartialPublishException(
-                $"压缩包已上传为任务 {upload.Id}，但创建文件版本失败；请先检查 Nexus 后再重试。",
+                $"压缩包已上传为任务 {upload.Id}，但创建 Nexus 文件或文件版本失败；请先检查 Nexus 后再重试。",
                 exception);
         }
 
@@ -90,12 +100,13 @@ internal sealed class NexusClient : IDisposable
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            var publishedKind = target.IsInitial ? "文件" : "文件版本";
             throw new PartialPublishException(
-                $"文件版本 {versionId} 已成功创建，但 changelog 更新失败。不要重复上传文件，只需在 Nexus 后台补写 changelog。",
+                $"{publishedKind} {publishedId} 已成功创建，但 changelog 更新失败。不要重复上传文件，只需在 Nexus 后台补写 changelog。",
                 exception);
         }
 
-        return new PublishResult(upload.Id, versionId);
+        return new PublishResult(upload.Id, publishedId, target.IsInitial);
     }
 
     public void Dispose()
@@ -104,10 +115,11 @@ internal sealed class NexusClient : IDisposable
         _storageClient.Dispose();
     }
 
-    private async Task<ExistingFile> ResolveExistingFileAsync(
-        string modId,
+    private async Task<NexusFileTarget> ResolveUploadTargetAsync(
+        ModPackage package,
         CancellationToken cancellationToken)
     {
+        var modId = package.Target.ModId;
         using var document = await SendApiAsync(
             HttpMethod.Get,
             $"mods/{Uri.EscapeDataString(modId)}/files",
@@ -122,8 +134,19 @@ internal sealed class NexusClient : IDisposable
             throw new InvalidOperationException("Nexus 响应字段 mod_files 不是数组。");
         }
 
-        var activeFileIds = files
-            .EnumerateArray()
+        var allFiles = files.EnumerateArray().ToArray();
+        if (allFiles.Length == 0)
+        {
+            var initialTarget = new NexusFileTarget(
+                FileId: null,
+                package.Name,
+                Category: "main",
+                IsInitial: true);
+            ValidateUploadTarget(initialTarget);
+            return initialTarget;
+        }
+
+        var activeFileIds = allFiles
             .Where(file => GetRequiredBoolean(file, "is_active"))
             .Select(file => GetRequiredText(file, "id"))
             .ToArray();
@@ -132,7 +155,7 @@ internal sealed class NexusClient : IDisposable
         {
             1 => activeFileIds[0],
             0 => throw new InvalidOperationException(
-                "该 Nexus 模组没有有效文件，无法按“唯一有效文件”规则自动更新。"),
+                "该 Nexus 模组已有文件记录，但没有有效文件；为避免误建第二个文件，已在上传前终止。"),
             _ => throw new InvalidOperationException(
                 $"该 Nexus 模组有 {activeFileIds.Length} 个有效文件；为避免更新错误文件，已在上传前终止。")
         };
@@ -151,8 +174,15 @@ internal sealed class NexusClient : IDisposable
             throw new InvalidOperationException("Nexus 响应字段 versions 不是数组。");
         }
 
-        var primaryVersions = versions
-            .EnumerateArray()
+        var allVersions = versions.EnumerateArray().ToArray();
+        if (allVersions.Any(version =>
+            GetRequiredText(version, "version").Equals(package.Version, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                $"版本 {package.Version} 已在目标 Nexus 文件中使用；每次上传必须使用不同版本号。");
+        }
+
+        var primaryVersions = allVersions
             .Where(version => GetOptionalBoolean(version, "is_primary"))
             .ToArray();
         if (primaryVersions.Length != 1)
@@ -162,30 +192,32 @@ internal sealed class NexusClient : IDisposable
         }
 
         var primaryVersion = primaryVersions[0];
-        var existingFile = new ExistingFile(
+        var target = new NexusFileTarget(
             fileId,
             GetRequiredText(primaryVersion, "name"),
-            GetRequiredText(primaryVersion, "category"));
-        ValidateExistingFile(existingFile);
-        return existingFile;
+            GetRequiredText(primaryVersion, "category"),
+            IsInitial: false);
+        ValidateUploadTarget(target);
+        return target;
     }
 
-    private static void ValidateExistingFile(ExistingFile file)
+    private static void ValidateUploadTarget(NexusFileTarget target)
     {
-        if (file.Name.Length > 50 || file.Name.Any(character =>
+        if (target.Name.Length > 50 || target.Name.Any(character =>
             !((character >= 'a' && character <= 'z') ||
               (character >= 'A' && character <= 'Z') ||
               (character >= '0' && character <= '9') ||
               character is ' ' or '_' or '\'' or '(' or ')' or '.' or '-')))
         {
+            var source = target.IsInitial ? "modinfo.ini 中的模组名称" : "当前文件显示名称";
             throw new InvalidOperationException(
-                "当前文件显示名称不符合 Nexus 新版本接口的要求；工具不会修改或截断它，已在上传前终止。");
+                $"{source}不符合 Nexus 文件接口的要求；工具不会修改或截断它，已在上传前终止。");
         }
 
-        if (!WritableFileCategories.Contains(file.Category))
+        if (!WritableFileCategories.Contains(target.Category))
         {
             throw new InvalidOperationException(
-                $"当前文件分类 {file.Category} 无法用于新版本；工具不会替换分类，已在上传前终止。");
+                $"文件分类 {target.Category} 无法用于发布；工具不会替换分类，已在上传前终止。");
         }
     }
 
@@ -402,21 +434,22 @@ internal sealed class NexusClient : IDisposable
 
     private async Task<string> CreateFileVersionAsync(
         string uploadId,
-        ExistingFile existingFile,
+        NexusFileTarget target,
         ModPackage package,
         CancellationToken cancellationToken)
     {
-        var target = package.Target;
         using var document = await SendApiAsync(
             HttpMethod.Post,
-            $"mod-files/{Uri.EscapeDataString(existingFile.Id)}/versions",
+            $"mod-files/{Uri.EscapeDataString(target.FileId!)}/versions",
             new
             {
                 upload_id = uploadId,
-                name = existingFile.Name,
-                description = string.IsNullOrWhiteSpace(target.Description) ? null : target.Description,
+                name = target.Name,
+                description = string.IsNullOrWhiteSpace(package.Target.Description)
+                    ? null
+                    : package.Target.Description,
                 version = package.Version,
-                file_category = existingFile.Category,
+                file_category = target.Category,
                 primary_mod_manager_download = true,
                 update_mod_version = true
             },
@@ -425,6 +458,35 @@ internal sealed class NexusClient : IDisposable
 
         var data = GetRequiredProperty(document.RootElement, "data");
         return GetRequiredText(GetRequiredProperty(data, "version"), "id");
+    }
+
+    private async Task<string> CreateInitialFileAsync(
+        string uploadId,
+        NexusFileTarget target,
+        ModPackage package,
+        CancellationToken cancellationToken)
+    {
+        using var document = await SendApiAsync(
+            HttpMethod.Post,
+            "mod-files",
+            new
+            {
+                upload_id = uploadId,
+                mod_id = package.Target.ModId,
+                name = target.Name,
+                description = string.IsNullOrWhiteSpace(package.Target.Description)
+                    ? null
+                    : package.Target.Description,
+                version = package.Version,
+                file_category = target.Category,
+                primary_mod_manager_download = true,
+                update_mod_version = true
+            },
+            HttpStatusCode.Created,
+            cancellationToken);
+
+        var data = GetRequiredProperty(document.RootElement, "data");
+        return GetRequiredText(data, "id");
     }
 
     private async Task AddChangelogAsync(
@@ -575,5 +637,9 @@ internal sealed class NexusClient : IDisposable
 
     private sealed record UploadedPart(int PartNumber, string ETag);
 
-    private sealed record ExistingFile(string Id, string Name, string Category);
+    private sealed record NexusFileTarget(
+        string? FileId,
+        string Name,
+        string Category,
+        bool IsInitial);
 }
