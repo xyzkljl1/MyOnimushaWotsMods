@@ -1,5 +1,7 @@
 # NexusUpdater
 
+> 本说明主要供 Codex 在本项目中执行 Nexus Mods 发布任务时阅读和遵循。
+
 这是一个独立发布工具，不是 REFramework mod。它把仓库根目录中由
 `PackageMods.ps1` 生成的 `.7z` 上传为 Nexus Mods 上**已有文件**的新版本，并同步：
 
