@@ -53,6 +53,8 @@ public sealed class ShowHP : ModBase
 {
     // Font height in the game's virtual 1920x1080 UI coordinate system.
     private const float VirtualFontSize = 12.0f;
+    private const long ValueUpdateIntervalMilliseconds = 33;
+    private const long LayoutUpdateIntervalMilliseconds = 250;
 
     private const uint TextColor = 0xFFFFFFFF;
     private const uint OutlineColor = 0xE0000000;
@@ -73,8 +75,12 @@ public sealed class ShowHP : ModBase
     private static int _pendingEnemyRemainingValue;
 
     private static HudSnapshot _snapshot;
+    private static HudLayout _layout;
+    private static bool _layoutValid;
     private static string _healthText;
     private static string _staminaText;
+    private static long _nextValueUpdateTick;
+    private static long _nextLayoutUpdateTick;
     private static int _lastHealth = int.MinValue;
     private static int _lastMaxHealth = int.MinValue;
     private static int _lastStamina = int.MinValue;
@@ -83,7 +89,7 @@ public sealed class ShowHP : ModBase
     private static int _renderErrorReported;
     private static int _enemyErrorReported;
 
-    private ShowHP() : base("ShowHP", "1.0")
+    private ShowHP() : base("ShowHP", "1.1")
     {
     }
 
@@ -93,7 +99,8 @@ public sealed class ShowHP : ModBase
     [PluginExitPoint]
     public static void OnUnload()
     {
-        HideHud();
+        InvalidateHud();
+        _nextValueUpdateTick = 0;
         _healthText = null;
         _staminaText = null;
         _lastHealth = int.MinValue;
@@ -180,11 +187,40 @@ public sealed class ShowHP : ModBase
             for (var index = 0; controls is not null && index < count; ++index)
             {
                 var control = controls[index];
-                var character = control?._Target?.Context?.Chara;
-                if (GetAddress(control?._HpDamage) == damageAddress)
+                if (!IsAlive(control))
                 {
-                    var health = character?.HealthManager;
-                    if (health is null)
+                    continue;
+                }
+
+                var isHealth = GetAddress(control._HpDamage) == damageAddress;
+                var isStamina = GetAddress(control._RikidoDamage) == damageAddress;
+                if (!isHealth && !isStamina)
+                {
+                    continue;
+                }
+
+                var target = control._Target;
+                if (!IsAlive(target))
+                {
+                    return false;
+                }
+
+                var context = target.Context;
+                if (!IsAlive(context))
+                {
+                    return false;
+                }
+
+                var character = context.Chara;
+                if (!IsAlive(character))
+                {
+                    return false;
+                }
+
+                if (isHealth)
+                {
+                    var health = character.HealthManager;
+                    if (!IsAlive(health))
                     {
                         return false;
                     }
@@ -193,13 +229,8 @@ public sealed class ShowHP : ModBase
                     return true;
                 }
 
-                if (GetAddress(control?._RikidoDamage) != damageAddress)
-                {
-                    continue;
-                }
-
-                var stamina = character?.RikidoSupporter;
-                if (stamina is null)
+                var stamina = character.RikidoSupporter;
+                if (!IsAlive(stamina))
                 {
                     return false;
                 }
@@ -216,15 +247,20 @@ public sealed class ShowHP : ModBase
             for (var index = 0; controls is not null && index < count; ++index)
             {
                 var control = controls[index];
-                var isHealth = GetAddress(control?._HpDamage) == damageAddress;
-                var isStamina = GetAddress(control?._RikidoDamage) == damageAddress;
+                if (!IsAlive(control))
+                {
+                    continue;
+                }
+
+                var isHealth = GetAddress(control._HpDamage) == damageAddress;
+                var isStamina = GetAddress(control._RikidoDamage) == damageAddress;
                 if (!isHealth && !isStamina)
                 {
                     continue;
                 }
 
-                var enemy = control?._EnemyInfo;
-                if (enemy is null)
+                var enemy = control._EnemyInfo;
+                if (!IsAlive(enemy))
                 {
                     return false;
                 }
@@ -242,24 +278,46 @@ public sealed class ShowHP : ModBase
     [Callback(typeof(UpdateBehavior), CallbackType.Post)]
     public static void OnUpdate()
     {
+        var now = Environment.TickCount64;
+        if (now < _nextValueUpdateTick)
+        {
+            return;
+        }
+
+        _nextValueUpdateTick = now + ValueUpdateIntervalMilliseconds;
+
         try
         {
-            if (!TryCaptureHud(out var snapshot))
+            if (!TryCapturePlayerValues(
+                    out var guiManager,
+                    out var health,
+                    out var maxHealth,
+                    out var stamina,
+                    out var maxStamina))
             {
-                HideHud();
+                InvalidateHud();
                 return;
             }
 
-            lock (SnapshotLock)
+            if (!_layoutValid || now >= _nextLayoutUpdateTick)
             {
-                _snapshot = snapshot;
+                if (!TryCaptureHudLayout(guiManager, out _layout))
+                {
+                    InvalidateHud();
+                    return;
+                }
+
+                _layoutValid = true;
+                _nextLayoutUpdateTick = now + LayoutUpdateIntervalMilliseconds;
             }
 
+            UpdateValueText(health, maxHealth, stamina, maxStamina);
+            PublishSnapshot(_layout);
             Volatile.Write(ref _updateErrorReported, 0);
         }
         catch (Exception exception)
         {
-            HideHud();
+            InvalidateHud();
             if (Interlocked.Exchange(ref _updateErrorReported, 1) == 0)
             {
                 Instance.Log($"HUD update failed: {exception}", ModLogLevel.Error);
@@ -338,9 +396,18 @@ public sealed class ShowHP : ModBase
         }
     }
 
-    private static bool TryCaptureHud(out HudSnapshot snapshot)
+    private static bool TryCapturePlayerValues(
+        out app.GUIManager guiManager,
+        out int health,
+        out int maxHealth,
+        out int stamina,
+        out int maxStamina)
     {
-        snapshot = default;
+        guiManager = null;
+        health = 0;
+        maxHealth = 0;
+        stamina = 0;
+        maxStamina = 0;
 
         var gameFlowManager = API.GetManagedSingletonT<app.GameFlowManager>();
         if (gameFlowManager is null || !gameFlowManager.IsIngameStable)
@@ -348,7 +415,7 @@ public sealed class ShowHP : ModBase
             return false;
         }
 
-        var guiManager = API.GetManagedSingletonT<app.GUIManager>();
+        guiManager = API.GetManagedSingletonT<app.GUIManager>();
         if (guiManager is null ||
             guiManager.isVisibleGUIApp(app.GUIID.ID.UI010200) ||
             !guiManager.isVisibleGUIApp(app.GUIID.ID.UI020206))
@@ -365,8 +432,19 @@ public sealed class ShowHP : ModBase
             return false;
         }
 
+        health = healthManager.Health;
+        maxHealth = healthManager.MaxHealth;
+        stamina = staminaSupporter.getRikidoValue();
+        maxStamina = (int)MathF.Round(staminaSupporter.getRikidoMaxValue());
+        return true;
+    }
+
+    private static bool TryCaptureHudLayout(app.GUIManager guiManager, out HudLayout layout)
+    {
+        layout = default;
+
         // GUI controls are owned by the current scene and are destroyed during
-        // transitions. Keep every proxy local to this game-update callback.
+        // transitions. Keep every proxy local to this layout sampling call.
         var rawHud = (guiManager as IObject)?.Call("getGUI", (int)app.GUIID.ID.UI020206) as ManagedObject;
         var lifeGauge = rawHud?.As<app.GUI020206>()?.LifeGauge;
         var healthPanel = lifeGauge?._HpIncrease?._PanelGauge;
@@ -391,17 +469,8 @@ public sealed class ShowHP : ModBase
         var sceneView = rootView.Component?.SceneView;
         var presentRect = sceneView?.PresentRect ?? default;
 
-        UpdateValueText(
-            healthManager.Health,
-            healthManager.MaxHealth,
-            staminaSupporter.getRikidoValue(),
-            (int)MathF.Round(staminaSupporter.getRikidoMaxValue()));
-
-        snapshot = new HudSnapshot
+        layout = new HudLayout
         {
-            Visible = true,
-            HealthText = _healthText,
-            StaminaText = _staminaText,
             VirtualWidth = virtualSize.w,
             VirtualHeight = virtualSize.h,
             PresentLeft = presentRect.l,
@@ -414,6 +483,30 @@ public sealed class ShowHP : ModBase
             VerticalHudScale = (healthScale.Y + staminaScale.Y) * 0.5f,
         };
         return true;
+    }
+
+    private static void PublishSnapshot(HudLayout layout)
+    {
+        var snapshot = new HudSnapshot
+        {
+            Visible = true,
+            HealthText = _healthText,
+            StaminaText = _staminaText,
+            VirtualWidth = layout.VirtualWidth,
+            VirtualHeight = layout.VirtualHeight,
+            PresentLeft = layout.PresentLeft,
+            PresentTop = layout.PresentTop,
+            PresentWidth = layout.PresentWidth,
+            PresentHeight = layout.PresentHeight,
+            HealthCenter = layout.HealthCenter,
+            StaminaCenter = layout.StaminaCenter,
+            VerticalHudScale = layout.VerticalHudScale,
+        };
+
+        lock (SnapshotLock)
+        {
+            _snapshot = snapshot;
+        }
     }
 
     private static void UpdateValueText(int health, int maxHealth, int stamina, int maxStamina)
@@ -439,6 +532,14 @@ public sealed class ShowHP : ModBase
         {
             _snapshot = default;
         }
+    }
+
+    private static void InvalidateHud()
+    {
+        _layout = default;
+        _layoutValid = false;
+        _nextLayoutUpdateTick = 0;
+        HideHud();
     }
 
     private static void SetEnemyDamageText(
@@ -473,6 +574,12 @@ public sealed class ShowHP : ModBase
 
     private static ulong GetAddress(object proxy) =>
         (proxy as IProxyable)?.GetAddress() ?? 0;
+
+    private static bool IsAlive(object proxy)
+    {
+        var address = GetAddress(proxy);
+        return address != 0 && ManagedObject.IsManagedObject(address);
+    }
 
     private static via.gui.Texture FindTexture(via.gui.Panel panel, string name)
     {
@@ -524,6 +631,19 @@ public sealed class ShowHP : ModBase
         public bool Visible;
         public string HealthText;
         public string StaminaText;
+        public float VirtualWidth;
+        public float VirtualHeight;
+        public float PresentLeft;
+        public float PresentTop;
+        public float PresentWidth;
+        public float PresentHeight;
+        public Vector2 HealthCenter;
+        public Vector2 StaminaCenter;
+        public float VerticalHudScale;
+    }
+
+    private struct HudLayout
+    {
         public float VirtualWidth;
         public float VirtualHeight;
         public float PresentLeft;
