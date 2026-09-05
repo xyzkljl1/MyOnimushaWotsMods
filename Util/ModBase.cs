@@ -1,3 +1,4 @@
+// I do this to avoid panicing users. Copying code everythere instead of publishing a DLL is indeed stupid, but users’ antivirus software is stupider.
 public enum ModLogLevel
 {
     Info,
