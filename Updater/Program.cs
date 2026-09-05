@@ -41,7 +41,7 @@ internal static class Program
             var apiKey = ReadApiKey(update.ConfigApiKey);
             using var client = new NexusClient(apiKey);
             var result = await client.PublishAsync(update.Package, cancellation.Token);
-            var publishedKind = result.CreatedInitialFile ? "文件" : "文件版本";
+            var publishedKind = result.CreatedNewFile ? "文件" : "文件版本";
             Console.WriteLine(
                 $"发布完成：Nexus {publishedKind} ID {result.PublishedId}，上传任务 ID {result.UploadId}。");
             return 0;
@@ -286,7 +286,7 @@ internal static class Program
         Console.WriteLine($"  版本：    {package.Version}");
         Console.WriteLine($"  压缩包：  {Path.GetFileName(package.ArchivePath)}");
         Console.WriteLine($"  Nexus mod ID： {package.Target.ModId}");
-        Console.WriteLine("  Nexus file：上传前自动解析；文件列表为空时创建首个主要文件");
+        Console.WriteLine("  Nexus file：上传前自动解析；当前没有 Main File 时创建新的主要文件");
         Console.WriteLine($"  Changelog：{package.Changelog.Length} 个字符");
     }
 

@@ -27,7 +27,7 @@ internal sealed record ModPackage(
 internal sealed record PublishResult(
     string UploadId,
     string PublishedId,
-    bool CreatedInitialFile);
+    bool CreatedNewFile);
 
 internal sealed record CommandLineOptions(
     string Mod,
