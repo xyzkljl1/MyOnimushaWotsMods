@@ -10,7 +10,7 @@ using REFrameworkNET.Callbacks;
 
 // BEGIN copied source: Util/ModBase.cs
 // Source blob SHA-1: 25417359db8c70a84c6f557d62440b857d2d6419
-// Source commit: e20d391eb437e196ea5cea4e509412573138e8a0
+// Source commit: c77daff1bbc82c3cd6b9f480c0d41025f01e05f7
 // I do this to avoid panicing users. Copying code everythere instead of publishing a DLL is indeed stupid, but users’ antivirus software is stupider.
 // Module: Mod identity, logging, one-time error reporting, and managed-object helpers.
 public enum ModLogLevel
@@ -96,8 +96,8 @@ public abstract partial class ModBase
 // END copied source: Util/ModBase.cs
 
 // BEGIN copied source: Util/ModBase.Config.cs
-// Source blob SHA-1: 16e66416e77f2925f58edf35b6a91f1f4f8a165b
-// Source commit: e20d391eb437e196ea5cea4e509412573138e8a0
+// Source blob SHA-1: 02d517f015079cc14be1e5d6ebec066fa8e2f8d8
+// Source commit: c77daff1bbc82c3cd6b9f480c0d41025f01e05f7
 // Module: ModBase configuration, persistence, and ImGui helpers.
 // Requires: Util/ModBase.cs from the same committed Git revision.
 public delegate bool ModConfigRenderer<T>(string label, ref T value);
@@ -234,6 +234,40 @@ public abstract partial class ModBase
                 Hexa.NET.ImGui.ImGui.Checkbox(label, ref value),
             key);
 
+    protected ModConfig<int> AddRadioGroupConfig(
+        string name,
+        int defaultValue,
+        string[] options,
+        bool sameLine = true,
+        string key = null)
+    {
+        System.ArgumentNullException.ThrowIfNull(options);
+        if (options.Length == 0)
+        {
+            throw new System.ArgumentException(
+                "A radio group must contain at least one option.",
+                nameof(options));
+        }
+
+        if (defaultValue < 0 || defaultValue >= options.Length)
+        {
+            throw new System.ArgumentOutOfRangeException(nameof(defaultValue));
+        }
+
+        var labels = (string[])options.Clone();
+        for (var index = 0; index < labels.Length; index++)
+        {
+            System.ArgumentException.ThrowIfNullOrWhiteSpace(labels[index]);
+        }
+
+        return AddConfig(
+            name,
+            defaultValue,
+            (string label, ref int value) =>
+                DrawRadioGroup(label, ref value, labels, sameLine),
+            key);
+    }
+
     protected ModConfig<int> AddIntConfig(
         string name,
         int defaultValue,
@@ -302,6 +336,45 @@ public abstract partial class ModBase
 
     protected bool DrawButton(string label, string id) =>
         Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
+
+    private static bool DrawRadioGroup(
+        string label,
+        ref int value,
+        string[] options,
+        bool sameLine)
+    {
+        var separator = label.IndexOf("##", System.StringComparison.Ordinal);
+        var name = separator >= 0 ? label[..separator] : label;
+        var id = separator >= 0 ? label[(separator + 2)..] : label;
+        Hexa.NET.ImGui.ImGui.TextUnformatted($"{name}:");
+        Hexa.NET.ImGui.ImGui.SameLine();
+
+        var changed = false;
+        var normalized = System.Math.Clamp(value, 0, options.Length - 1);
+        if (normalized != value)
+        {
+            value = normalized;
+            changed = true;
+        }
+
+        for (var index = 0; index < options.Length; index++)
+        {
+            if (sameLine && index > 0)
+            {
+                Hexa.NET.ImGui.ImGui.SameLine();
+            }
+
+            if (Hexa.NET.ImGui.ImGui.RadioButton(
+                    $"{options[index]}##{id}.Radio.{index}",
+                    value == index))
+            {
+                value = index;
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
 
     protected void DrawCollapsible(
         string label,
@@ -443,11 +516,11 @@ public abstract partial class ModBase
 // END copied source: Util/ModBase.Config.cs
 
 // BEGIN copied source: Util/ModBase.Hotkey.cs
-// Source blob SHA-1: 3e658513a4d1e05af7e2d462b16f0e1cebe1319f
-// Source commit: e20d391eb437e196ea5cea4e509412573138e8a0
+// Source blob SHA-1: bb8c2b176bbbdb41e4b29be3f7cfab0f982c0590
+// Source commit: c77daff1bbc82c3cd6b9f480c0d41025f01e05f7
 // Module: Persistent keyboard/gamepad shortcuts and their ImGui editor.
 // Requires: Util/ModBase.cs and Util/ModBase.Config.cs from the same commit.
-// Add a binding with AddHotkeyConfig(), then call IsHotkeyPressed() once per ImGui frame.
+// Add a binding with AddHotkeyConfig(), then call IsHotkeyPressed() once per frame.
 public struct ModHotkey
 {
     public ModHotkey(
@@ -470,23 +543,28 @@ public struct ModHotkey
     public bool IsValid =>
         Key == Hexa.NET.ImGui.ImGuiKey.None || IsBindableKey(Key);
 
-    public bool IsPressed(bool allowWhenKeyboardCaptured = false)
+    public bool IsDown(bool allowWhenKeyboardCaptured = false)
     {
         if (Key == Hexa.NET.ImGui.ImGuiKey.None || !IsBindableKey(Key))
         {
             return false;
         }
 
-        if (!allowWhenKeyboardCaptured &&
-            Hexa.NET.ImGui.ImGui.GetIO().WantCaptureKeyboard)
+        if (!allowWhenKeyboardCaptured && REFrameworkNET.API.IsDrawingUI())
         {
             return false;
         }
 
-        return Hexa.NET.ImGui.ImGui.IsKeyPressed(Key, false) &&
-               Ctrl == Hexa.NET.ImGui.ImGui.IsKeyDown(Hexa.NET.ImGui.ImGuiKey.ModCtrl) &&
-               Shift == Hexa.NET.ImGui.ImGui.IsKeyDown(Hexa.NET.ImGui.ImGuiKey.ModShift) &&
-               Alt == Hexa.NET.ImGui.ImGui.IsKeyDown(Hexa.NET.ImGui.ImGuiKey.ModAlt);
+        return IsKeyDown(Key) &&
+               Ctrl == IsNativeModifierDown(
+                   via.hid.KeyboardKey.LControl,
+                   via.hid.KeyboardKey.RControl) &&
+               Shift == IsNativeModifierDown(
+                   via.hid.KeyboardKey.LShift,
+                   via.hid.KeyboardKey.RShift) &&
+               Alt == IsNativeModifierDown(
+                   via.hid.KeyboardKey.LMenu,
+                   via.hid.KeyboardKey.RMenu);
     }
 
     public override string ToString()
@@ -511,6 +589,132 @@ public struct ModHotkey
         return (isKeyboard && !IsModifierKey(key)) || isGamepad;
     }
 
+    private static bool IsKeyDown(Hexa.NET.ImGui.ImGuiKey key)
+    {
+        if (TryGetNativeKeyboardKey(key, out var keyboardKey))
+        {
+            return IsVirtualKeyDown(keyboardKey);
+        }
+
+        if (TryGetNativeGamePadButton(key, out var gamePadButton))
+        {
+            var device = via.hid.GamePad.MergedDevice;
+            return device is not null &&
+                   (device.ButtonDown & gamePadButton) != via.hid.GamePadButton.None;
+        }
+
+        return Hexa.NET.ImGui.ImGui.IsKeyDown(key);
+    }
+
+    private static bool IsNativeModifierDown(
+        via.hid.KeyboardKey left,
+        via.hid.KeyboardKey right)
+    {
+        return IsVirtualKeyDown(left) || IsVirtualKeyDown(right);
+    }
+
+    private static bool IsVirtualKeyDown(via.hid.KeyboardKey key) =>
+        (GetAsyncKeyState((int)key) & 0x8000) != 0;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int virtualKey);
+
+    private static bool TryGetNativeKeyboardKey(
+        Hexa.NET.ImGui.ImGuiKey key,
+        out via.hid.KeyboardKey keyboardKey)
+    {
+        var name = key switch
+        {
+            Hexa.NET.ImGui.ImGuiKey.LeftArrow => "Left",
+            Hexa.NET.ImGui.ImGuiKey.RightArrow => "Right",
+            Hexa.NET.ImGui.ImGuiKey.UpArrow => "Up",
+            Hexa.NET.ImGui.ImGuiKey.DownArrow => "Down",
+            Hexa.NET.ImGui.ImGuiKey.PageUp => "Prior",
+            Hexa.NET.ImGui.ImGuiKey.PageDown => "Next",
+            Hexa.NET.ImGui.ImGuiKey.Backspace => "Back",
+            Hexa.NET.ImGui.ImGuiKey.LeftSuper => "LWin",
+            Hexa.NET.ImGui.ImGuiKey.RightSuper => "RWin",
+            Hexa.NET.ImGui.ImGuiKey.Menu => "Apps",
+            Hexa.NET.ImGui.ImGuiKey.Key0 => "Alpha0",
+            Hexa.NET.ImGui.ImGuiKey.Key1 => "Alpha1",
+            Hexa.NET.ImGui.ImGuiKey.Key2 => "Alpha2",
+            Hexa.NET.ImGui.ImGuiKey.Key3 => "Alpha3",
+            Hexa.NET.ImGui.ImGuiKey.Key4 => "Alpha4",
+            Hexa.NET.ImGui.ImGuiKey.Key5 => "Alpha5",
+            Hexa.NET.ImGui.ImGuiKey.Key6 => "Alpha6",
+            Hexa.NET.ImGui.ImGuiKey.Key7 => "Alpha7",
+            Hexa.NET.ImGui.ImGuiKey.Key8 => "Alpha8",
+            Hexa.NET.ImGui.ImGuiKey.Key9 => "Alpha9",
+            Hexa.NET.ImGui.ImGuiKey.Apostrophe => "OEM_7",
+            Hexa.NET.ImGui.ImGuiKey.Comma => "OEM_Comma",
+            Hexa.NET.ImGui.ImGuiKey.Minus => "OEM_Minus",
+            Hexa.NET.ImGui.ImGuiKey.Period => "OEM_Period",
+            Hexa.NET.ImGui.ImGuiKey.Slash => "OEM_2",
+            Hexa.NET.ImGui.ImGuiKey.Semicolon => "OEM_1",
+            Hexa.NET.ImGui.ImGuiKey.Equal => "OEM_Plus",
+            Hexa.NET.ImGui.ImGuiKey.LeftBracket => "OEM_4",
+            Hexa.NET.ImGui.ImGuiKey.Backslash => "OEM_5",
+            Hexa.NET.ImGui.ImGuiKey.RightBracket => "OEM_6",
+            Hexa.NET.ImGui.ImGuiKey.GraveAccent => "OEM_3",
+            Hexa.NET.ImGui.ImGuiKey.CapsLock => "Capital",
+            Hexa.NET.ImGui.ImGuiKey.ScrollLock => "Scroll",
+            Hexa.NET.ImGui.ImGuiKey.PrintScreen => "SnapShot",
+            Hexa.NET.ImGui.ImGuiKey.Keypad0 => "NumPad0",
+            Hexa.NET.ImGui.ImGuiKey.Keypad1 => "NumPad1",
+            Hexa.NET.ImGui.ImGuiKey.Keypad2 => "NumPad2",
+            Hexa.NET.ImGui.ImGuiKey.Keypad3 => "NumPad3",
+            Hexa.NET.ImGui.ImGuiKey.Keypad4 => "NumPad4",
+            Hexa.NET.ImGui.ImGuiKey.Keypad5 => "NumPad5",
+            Hexa.NET.ImGui.ImGuiKey.Keypad6 => "NumPad6",
+            Hexa.NET.ImGui.ImGuiKey.Keypad7 => "NumPad7",
+            Hexa.NET.ImGui.ImGuiKey.Keypad8 => "NumPad8",
+            Hexa.NET.ImGui.ImGuiKey.Keypad9 => "NumPad9",
+            Hexa.NET.ImGui.ImGuiKey.KeypadDecimal => "Decimal",
+            Hexa.NET.ImGui.ImGuiKey.KeypadDivide => "Divide",
+            Hexa.NET.ImGui.ImGuiKey.KeypadMultiply => "Multiply",
+            Hexa.NET.ImGui.ImGuiKey.KeypadSubtract => "Subtract",
+            Hexa.NET.ImGui.ImGuiKey.KeypadAdd => "Add",
+            Hexa.NET.ImGui.ImGuiKey.KeypadEnter => "NumPadEnter",
+            Hexa.NET.ImGui.ImGuiKey.Oem102 => "OEM_102",
+            _ => key.ToString(),
+        };
+        return System.Enum.TryParse(name, out keyboardKey) &&
+               keyboardKey != via.hid.KeyboardKey.None;
+    }
+
+    private static bool TryGetNativeGamePadButton(
+        Hexa.NET.ImGui.ImGuiKey key,
+        out via.hid.GamePadButton button)
+    {
+        button = key switch
+        {
+            Hexa.NET.ImGui.ImGuiKey.GamepadFaceLeft => via.hid.GamePadButton.RLeft,
+            Hexa.NET.ImGui.ImGuiKey.GamepadFaceRight => via.hid.GamePadButton.RRight,
+            Hexa.NET.ImGui.ImGuiKey.GamepadFaceUp => via.hid.GamePadButton.RUp,
+            Hexa.NET.ImGui.ImGuiKey.GamepadFaceDown => via.hid.GamePadButton.RDown,
+            Hexa.NET.ImGui.ImGuiKey.GamepadDpadLeft => via.hid.GamePadButton.LLeft,
+            Hexa.NET.ImGui.ImGuiKey.GamepadDpadRight => via.hid.GamePadButton.LRight,
+            Hexa.NET.ImGui.ImGuiKey.GamepadDpadUp => via.hid.GamePadButton.LUp,
+            Hexa.NET.ImGui.ImGuiKey.GamepadDpadDown => via.hid.GamePadButton.LDown,
+            Hexa.NET.ImGui.ImGuiKey.GamepadL1 => via.hid.GamePadButton.LTrigTop,
+            Hexa.NET.ImGui.ImGuiKey.GamepadR1 => via.hid.GamePadButton.RTrigTop,
+            Hexa.NET.ImGui.ImGuiKey.GamepadL2 => via.hid.GamePadButton.LTrigBottom,
+            Hexa.NET.ImGui.ImGuiKey.GamepadR2 => via.hid.GamePadButton.RTrigBottom,
+            Hexa.NET.ImGui.ImGuiKey.GamepadL3 => via.hid.GamePadButton.LStickPush,
+            Hexa.NET.ImGui.ImGuiKey.GamepadR3 => via.hid.GamePadButton.RStickPush,
+            Hexa.NET.ImGui.ImGuiKey.GamepadLStickLeft => via.hid.GamePadButton.EmuLleft,
+            Hexa.NET.ImGui.ImGuiKey.GamepadLStickRight => via.hid.GamePadButton.EmuLright,
+            Hexa.NET.ImGui.ImGuiKey.GamepadLStickUp => via.hid.GamePadButton.EmuLup,
+            Hexa.NET.ImGui.ImGuiKey.GamepadLStickDown => via.hid.GamePadButton.EmuLdown,
+            Hexa.NET.ImGui.ImGuiKey.GamepadRStickLeft => via.hid.GamePadButton.EmuRleft,
+            Hexa.NET.ImGui.ImGuiKey.GamepadRStickRight => via.hid.GamePadButton.EmuRright,
+            Hexa.NET.ImGui.ImGuiKey.GamepadRStickUp => via.hid.GamePadButton.EmuRup,
+            Hexa.NET.ImGui.ImGuiKey.GamepadRStickDown => via.hid.GamePadButton.EmuRdown,
+            _ => via.hid.GamePadButton.None,
+        };
+        return button != via.hid.GamePadButton.None;
+    }
+
     private static bool IsModifierKey(Hexa.NET.ImGui.ImGuiKey key) =>
         key == Hexa.NET.ImGui.ImGuiKey.LeftCtrl ||
         key == Hexa.NET.ImGui.ImGuiKey.LeftShift ||
@@ -525,6 +729,8 @@ public struct ModHotkey
 public abstract partial class ModBase
 {
     private string _capturingHotkeyId;
+    private readonly System.Collections.Generic.Dictionary<ModConfig<ModHotkey>, bool>
+        _hotkeyDownStates = new();
 
     protected ModConfig<ModHotkey> AddHotkeyConfig(
         string name,
@@ -553,12 +759,15 @@ public abstract partial class ModBase
         return AddConfig(name, defaultValue, DrawHotkeyConfig, key);
     }
 
-    protected static bool IsHotkeyPressed(
+    protected bool IsHotkeyPressed(
         ModConfig<ModHotkey> hotkey,
         bool allowWhenKeyboardCaptured = false)
     {
         System.ArgumentNullException.ThrowIfNull(hotkey);
-        return hotkey.Value.IsPressed(allowWhenKeyboardCaptured);
+        var isDown = hotkey.Value.IsDown(allowWhenKeyboardCaptured);
+        var wasDown = _hotkeyDownStates.TryGetValue(hotkey, out var previous) && previous;
+        _hotkeyDownStates[hotkey] = isDown;
+        return isDown && !wasDown;
     }
 
     private bool DrawHotkeyConfig(string label, ref ModHotkey value)
@@ -586,18 +795,6 @@ public abstract partial class ModBase
         {
             _capturingHotkeyId = isCapturing ? null : label;
             isCapturing = !isCapturing;
-        }
-
-        Hexa.NET.ImGui.ImGui.SameLine();
-        if (Hexa.NET.ImGui.ImGui.Button($"clear{id}.Clear"))
-        {
-            value = default;
-            if (isCapturing)
-            {
-                _capturingHotkeyId = null;
-            }
-
-            changed = true;
         }
 
         if (isCapturing)
@@ -680,8 +877,8 @@ public sealed class Minimap : ModBase
 
     private static readonly string[] OrientationNames =
     {
-        "Fixed map direction",
-        "Fixed player direction",
+        "North",
+        "Face",
     };
 
     private static readonly string[] ShapeNames =
@@ -693,17 +890,15 @@ public sealed class Minimap : ModBase
     private static readonly Minimap Instance = new();
     private static readonly List<MapTile> Tiles = new();
 
-    private readonly ModConfig<bool> _enabled;
     private readonly ModConfig<ModHotkey> _toggleHotkey;
     private readonly ModConfig<int> _orientation;
     private readonly ModConfig<int> _shape;
     private readonly ModConfig<float> _width;
     private readonly ModConfig<float> _height;
     private readonly ModConfig<float> _pixelsPerMeter;
-    private readonly ModConfig<float> _rightMargin;
-    private readonly ModConfig<float> _topMargin;
-    private bool _effectiveEnabled;
-    private bool _lastConfiguredEnabled;
+    private readonly ModConfig<float> _rightOffset;
+    private readonly ModConfig<float> _topOffset;
+    private bool _isVisible = true;
 
     private static MapDefinition _map;
     private static OverlaySnapshot _overlay;
@@ -722,37 +917,23 @@ public sealed class Minimap : ModBase
 
     private Minimap() : base("Minimap", "1.0")
     {
-        _enabled = AddBoolConfig("Enabled on startup", true, "Enabled");
-        _effectiveEnabled = _lastConfiguredEnabled = _enabled.Value;
         _toggleHotkey = AddHotkeyConfig("Toggle hotkey", ImGuiKey.F6);
-        _orientation = AddConfig(
+        _orientation = AddRadioGroupConfig(
             "Orientation",
             MapFixed,
-            static (string label, ref int value) =>
-            {
-                value = Math.Clamp(value, MapFixed, PlayerFixed);
-                return ImGui.Combo(
-                    label,
-                    ref value,
-                    OrientationNames,
-                    OrientationNames.Length);
-            });
-        _shape = AddConfig(
+            OrientationNames);
+        _shape = AddRadioGroupConfig(
             "Shape",
             RectangleShape,
-            static (string label, ref int value) =>
-            {
-                value = Math.Clamp(value, RectangleShape, CircleShape);
-                return ImGui.Combo(label, ref value, ShapeNames, ShapeNames.Length);
-            });
+            ShapeNames);
         _width = AddFloatConfig("Width", 420.0f, 20.0f, 800.0f, "%.0f");
         _height = AddFloatConfig("Height", 280.0f, 20.0f, 540.0f, "%.0f");
         _pixelsPerMeter = AddFloatConfig(
             "Zoom", 4.8f, 2.0f, 10.0f, "%.1f px/m");
-        _rightMargin = AddFloatConfig(
-            "Right margin", 36.0f, 0.0f, 3839.0f, "%.0f");
-        _topMargin = AddFloatConfig(
-            "Top margin", 80.0f, 0.0f, 2159.0f, "%.0f");
+        _rightOffset = AddFloatConfig(
+            "Right offset", 36.0f, 0.0f, 3839.0f, "%.0f", key: "Right margin");
+        _topOffset = AddFloatConfig(
+            "Top offset", 80.0f, 0.0f, 2159.0f, "%.0f", key: "Top margin");
     }
 
     [PluginEntryPoint]
@@ -775,25 +956,15 @@ public sealed class Minimap : ModBase
     }
 
     [Callback(typeof(ImGuiDrawUI), CallbackType.Post)]
-    public static void OnDrawUI() =>
-        Instance.DrawConfigUI(
-            static () =>
-            {
-                DrawText(
-                    "Uses the current area's original map artwork and keeps the player centered. " +
-                    "The large-map screen itself is never created or controlled.");
-                DrawText(
-                    $"Current state: " +
-                    $"{(Instance.IsEffectivelyEnabled() ? "enabled" : "disabled")}",
-                    true);
-            });
+    public static void OnDrawUI() => Instance.DrawConfigUI();
 
     [Callback(typeof(UpdateBehavior), CallbackType.Post)]
     public static void OnUpdate()
     {
         try
         {
-            if (!Instance.IsEffectivelyEnabled() || !TryGetGameContext(
+            Instance.ProcessToggleHotkey();
+            if (!Instance._isVisible || !TryGetGameContext(
                     out var guiManager,
                     out var root,
                     out var fixedStage,
@@ -869,11 +1040,11 @@ public sealed class Minimap : ModBase
             }
 
             var left = Math.Clamp(
-                screen.w - Instance._rightMargin.Value - displayWidth,
+                screen.w - Instance._rightOffset.Value - displayWidth,
                 0.0f,
                 screen.w - displayWidth);
             var top = Math.Clamp(
-                Instance._topMargin.Value,
+                Instance._topOffset.Value,
                 0.0f,
                 screen.h - displayHeight);
             var position = playerTransform.Position;
@@ -935,7 +1106,6 @@ public sealed class Minimap : ModBase
     [Callback(typeof(ImGuiRender), CallbackType.Post)]
     public static void OnImGuiRender()
     {
-        Instance.ProcessToggleHotkey();
         var snapshot = Volatile.Read(ref _overlay);
         if (snapshot is null)
         {
@@ -1011,18 +1181,6 @@ public sealed class Minimap : ModBase
         }
     }
 
-    private bool IsEffectivelyEnabled()
-    {
-        var configuredEnabled = _enabled.Value;
-        if (configuredEnabled != _lastConfiguredEnabled)
-        {
-            _lastConfiguredEnabled = configuredEnabled;
-            _effectiveEnabled = configuredEnabled;
-        }
-
-        return _effectiveEnabled;
-    }
-
     private void ProcessToggleHotkey()
     {
         if (!IsHotkeyPressed(_toggleHotkey))
@@ -1030,8 +1188,8 @@ public sealed class Minimap : ModBase
             return;
         }
 
-        _effectiveEnabled = !IsEffectivelyEnabled();
-        Log($"Toggled {(_effectiveEnabled ? "on" : "off")} by hotkey.");
+        _isVisible = !_isVisible;
+        Log($"Toggled {(_isVisible ? "on" : "off")} by hotkey.");
     }
 
     private static bool TryGetGameContext(
