@@ -10,7 +10,7 @@ using REFrameworkNET.Callbacks;
 
 // BEGIN copied source: Util/ModBase.cs
 // Source blob SHA-1: 25417359db8c70a84c6f557d62440b857d2d6419
-// Source commit: c77daff1bbc82c3cd6b9f480c0d41025f01e05f7
+// Source commit: de5b215e98b70a81b36e603e07217f2525355e91
 // I do this to avoid panicing users. Copying code everythere instead of publishing a DLL is indeed stupid, but users’ antivirus software is stupider.
 // Module: Mod identity, logging, one-time error reporting, and managed-object helpers.
 public enum ModLogLevel
@@ -97,7 +97,7 @@ public abstract partial class ModBase
 
 // BEGIN copied source: Util/ModBase.Config.cs
 // Source blob SHA-1: 02d517f015079cc14be1e5d6ebec066fa8e2f8d8
-// Source commit: c77daff1bbc82c3cd6b9f480c0d41025f01e05f7
+// Source commit: de5b215e98b70a81b36e603e07217f2525355e91
 // Module: ModBase configuration, persistence, and ImGui helpers.
 // Requires: Util/ModBase.cs from the same committed Git revision.
 public delegate bool ModConfigRenderer<T>(string label, ref T value);
@@ -516,8 +516,8 @@ public abstract partial class ModBase
 // END copied source: Util/ModBase.Config.cs
 
 // BEGIN copied source: Util/ModBase.Hotkey.cs
-// Source blob SHA-1: bb8c2b176bbbdb41e4b29be3f7cfab0f982c0590
-// Source commit: c77daff1bbc82c3cd6b9f480c0d41025f01e05f7
+// Source blob SHA-1: 9aba964758d536ae9257a9953438bf77a5b3af9a
+// Source commit: de5b215e98b70a81b36e603e07217f2525355e91
 // Module: Persistent keyboard/gamepad shortcuts and their ImGui editor.
 // Requires: Util/ModBase.cs and Util/ModBase.Config.cs from the same commit.
 // Add a binding with AddHotkeyConfig(), then call IsHotkeyPressed() once per frame.
@@ -556,6 +556,7 @@ public struct ModHotkey
         }
 
         return IsKeyDown(Key) &&
+               IsCurrentProcessForeground() &&
                Ctrl == IsNativeModifierDown(
                    via.hid.KeyboardKey.LControl,
                    via.hid.KeyboardKey.RControl) &&
@@ -616,8 +617,28 @@ public struct ModHotkey
     private static bool IsVirtualKeyDown(via.hid.KeyboardKey key) =>
         (GetAsyncKeyState((int)key) & 0x8000) != 0;
 
+    private static bool IsCurrentProcessForeground()
+    {
+        var window = GetForegroundWindow();
+        if (window == System.IntPtr.Zero)
+        {
+            return false;
+        }
+
+        GetWindowThreadProcessId(window, out var processId);
+        return processId == (uint)System.Environment.ProcessId;
+    }
+
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int virtualKey);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern System.IntPtr GetForegroundWindow();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(
+        System.IntPtr window,
+        out uint processId);
 
     private static bool TryGetNativeKeyboardKey(
         Hexa.NET.ImGui.ImGuiKey key,
@@ -860,9 +881,19 @@ public sealed class Minimap : ModBase
     private const float WorldToMapPixels = 6.40000009536743f;
     private const string TileNamePrefix = "Minimap_";
     private const string LegacyTileNamePrefix = "LittleMap_";
-    private const long SetPlayObjectNameAddress = 0x148afd3a0;
+    private const int SetPlayObjectNameRva = 0x08afd3a0;
     private const long RetryDelayMilliseconds = 1000;
     private const ushort MapDrawPriority = ushort.MaxValue;
+
+    private static readonly byte[] SetPlayObjectNameSignature =
+    {
+        0x41, 0x56, 0x56, 0x57, 0x53, 0x48, 0x83, 0xec,
+        0x28, 0x48, 0x89, 0xd6, 0x49, 0x8b, 0x38, 0xf6,
+        0x42, 0x50, 0x40, 0x74, 0x1d, 0x48, 0x8b, 0x4e,
+        0x10, 0x48, 0x85, 0xc9, 0x74, 0x0d, 0xe8, 0x3d,
+        0x83, 0xce, 0xfb, 0x48, 0xc7, 0x46, 0x10, 0x00,
+        0x00, 0x00, 0x00, 0xc7, 0x46, 0x58, 0xff, 0xff,
+    };
 
     private const uint BorderColor = 0xE0D0B070;
     private const uint PlayerOutlineColor = 0xF0000000;
@@ -911,6 +942,7 @@ public sealed class Minimap : ModBase
     private static REFrameworkNET.Resource _maskResource;
     private static ManagedObject _maskHolderObject;
     private static ulong _hudRootAddress;
+    private static SetPlayObjectNameDelegate _setPlayObjectName;
     private static long _nextRetryTick;
     private static int _errorReported;
     private static int _cleanupErrorReported;
@@ -1363,12 +1395,14 @@ public sealed class Minimap : ModBase
 
     private static bool TryCreateMapGroup(via.gui.View root)
     {
+        via.gui.Panel group = null;
+        via.gui.Circle circle = null;
         try
         {
             var groupObject = via.gui.Panel.REFType.CreateInstance(0);
-            var group = groupObject?.TryAs<via.gui.Panel>();
+            group = groupObject?.TryAs<via.gui.Panel>();
             var circleObject = via.gui.Circle.REFType.CreateInstance(0);
-            var circle = circleObject?.TryAs<via.gui.Circle>();
+            circle = circleObject?.TryAs<via.gui.Circle>();
             if (!IsAlive(group) || !IsAlive(circle))
             {
                 throw new InvalidOperationException("Could not create the map mask group.");
@@ -1391,7 +1425,6 @@ public sealed class Minimap : ModBase
             SetPlayObjectName(circle, $"{TileNamePrefix}CircleMask");
             if (!group.addChildByScript(circle))
             {
-                group.remove();
                 throw new InvalidOperationException(
                     "addChildByScript returned false for the circle mask.");
             }
@@ -1404,6 +1437,8 @@ public sealed class Minimap : ModBase
         }
         catch (Exception exception)
         {
+            TryRemovePlayObject(circle, "map circle rollback");
+            TryRemovePlayObject(group, "map group rollback");
             if (Interlocked.Exchange(ref _errorReported, 1) == 0)
             {
                 Instance.Log(
@@ -1419,17 +1454,20 @@ public sealed class Minimap : ModBase
         via.gui.Panel group,
         MapDefinition map)
     {
+        REFrameworkNET.Resource resource = null;
+        via.gui.Texture texture = null;
+        var createdRectangleMask = false;
         try
         {
             var definition = map.Tiles[Tiles.Count];
             var resourceManager = API.GetResourceManager();
-            var resource = resourceManager.CreateResource(
+            resource = resourceManager.CreateResource(
                 "via.render.TextureResource", definition.ResourcePath);
             var holderObject = resource?.CreateHolder(
                 "via.render.TextureResourceHolder");
             var holder = holderObject?.TryAs<via.render.TextureResourceHolder>();
             var textureObject = via.gui.Texture.REFType.CreateInstance(0);
-            var texture = textureObject?.TryAs<via.gui.Texture>();
+            texture = textureObject?.TryAs<via.gui.Texture>();
             if (resource is null || !IsAlive(holder) || !IsAlive(texture))
             {
                 throw new InvalidOperationException(
@@ -1447,6 +1485,7 @@ public sealed class Minimap : ModBase
             if (_rectangleMask is null)
             {
                 TryCreateRectangleMask(group, resource, holderObject, holder);
+                createdRectangleMask = true;
             }
 
             if (!group.addChildByScript(texture))
@@ -1463,10 +1502,22 @@ public sealed class Minimap : ModBase
                 holderObject,
                 textureObject,
                 texture));
+            resource = null;
             return true;
         }
         catch (Exception exception)
         {
+            TryRemoveTexture(texture, "map tile rollback");
+            if (createdRectangleMask)
+            {
+                TryRemoveTexture(_rectangleMask, "rectangle mask rollback");
+                _rectangleMask = null;
+                _rectangleMaskObject = null;
+                _maskResource = null;
+                _maskHolderObject = null;
+            }
+
+            TryReleaseResource(resource, "map tile rollback");
             if (Interlocked.Exchange(ref _errorReported, 1) == 0)
             {
                 Instance.Log($"Native map creation will retry: {exception}", ModLogLevel.Error);
@@ -1482,32 +1533,40 @@ public sealed class Minimap : ModBase
         ManagedObject holderObject,
         via.render.TextureResourceHolder holder)
     {
-        var maskObject = via.gui.Texture.REFType.CreateInstance(0);
-        var mask = maskObject?.TryAs<via.gui.Texture>();
-        if (!IsAlive(mask))
+        via.gui.Texture mask = null;
+        try
         {
-            throw new InvalidOperationException("Could not create the rectangle mask.");
-        }
+            var maskObject = via.gui.Texture.REFType.CreateInstance(0);
+            mask = maskObject?.TryAs<via.gui.Texture>();
+            if (!IsAlive(mask))
+            {
+                throw new InvalidOperationException("Could not create the rectangle mask.");
+            }
 
-        mask.Visible = false;
-        mask.AssetType = via.gui.TextureAssetType.Texture;
-        mask.UVType = via.gui.UVValueType.Rect;
-        mask.ControlPoint = via.gui.ControlPoint.LeftTop;
-        mask.MaskType = via.gui.MaskType.Mask;
-        mask.setTexture(holder);
-        SetCrop(mask, TilePixels / 2, TilePixels / 2, 1, 1);
-        SetPlayObjectName(mask, $"{TileNamePrefix}RectangleMask");
-        if (!group.addChildByScript(mask))
+            mask.Visible = false;
+            mask.AssetType = via.gui.TextureAssetType.Texture;
+            mask.UVType = via.gui.UVValueType.Rect;
+            mask.ControlPoint = via.gui.ControlPoint.LeftTop;
+            mask.MaskType = via.gui.MaskType.Mask;
+            mask.setTexture(holder);
+            SetCrop(mask, TilePixels / 2, TilePixels / 2, 1, 1);
+            SetPlayObjectName(mask, $"{TileNamePrefix}RectangleMask");
+            if (!group.addChildByScript(mask))
+            {
+                throw new InvalidOperationException(
+                    "addChildByScript returned false for the rectangle mask.");
+            }
+
+            _rectangleMaskObject = maskObject;
+            _rectangleMask = mask;
+            _maskResource = resource;
+            _maskHolderObject = holderObject;
+        }
+        catch
         {
-            mask.remove();
-            throw new InvalidOperationException(
-                "addChildByScript returned false for the rectangle mask.");
+            TryRemoveTexture(mask, "rectangle mask rollback");
+            throw;
         }
-
-        _rectangleMaskObject = maskObject;
-        _rectangleMask = mask;
-        _maskResource = resource;
-        _maskHolderObject = holderObject;
     }
 
     private static void UpdateNativeMap(
@@ -1668,17 +1727,55 @@ public sealed class Minimap : ModBase
 
     private static void SetPlayObjectName(via.gui.PlayObject playObject, string name)
     {
+        var setter = GetSetPlayObjectName();
         var text = Marshal.StringToHGlobalUni(name);
         try
         {
-            var setter = Marshal.GetDelegateForFunctionPointer<SetPlayObjectNameDelegate>(
-                new IntPtr(SetPlayObjectNameAddress));
             setter(IntPtr.Zero, new IntPtr((long)GetAddress(playObject)), ref text);
         }
         finally
         {
             Marshal.FreeHGlobal(text);
         }
+
+        if (!string.Equals(playObject.Name, name, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Could not name play object {name}.");
+        }
+    }
+
+    private static SetPlayObjectNameDelegate GetSetPlayObjectName()
+    {
+        if (_setPlayObjectName is not null)
+        {
+            return _setPlayObjectName;
+        }
+
+        using var process = System.Diagnostics.Process.GetCurrentProcess();
+        using var module = process.MainModule ??
+            throw new InvalidOperationException("Could not inspect the game module.");
+        if (SetPlayObjectNameRva < 0 ||
+            SetPlayObjectNameRva > module.ModuleMemorySize - SetPlayObjectNameSignature.Length)
+        {
+            throw new InvalidOperationException(
+                "The native play-object name setter is outside the game module.");
+        }
+
+        var address = IntPtr.Add(module.BaseAddress, SetPlayObjectNameRva);
+        var actual = new byte[SetPlayObjectNameSignature.Length];
+        Marshal.Copy(address, actual, 0, actual.Length);
+        for (var index = 0; index < actual.Length; index++)
+        {
+            if (actual[index] != SetPlayObjectNameSignature[index])
+            {
+                throw new InvalidOperationException(
+                    "The game build is incompatible with the native map renderer.");
+            }
+        }
+
+        _setPlayObjectName =
+            Marshal.GetDelegateForFunctionPointer<SetPlayObjectNameDelegate>(address);
+        return _setPlayObjectName;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -1789,11 +1886,12 @@ public sealed class Minimap : ModBase
 
     private static void ResetMap()
     {
+        TryRemoveTexture(_rectangleMask, "rectangle mask");
         RemoveTiles(Tiles);
+        TryRemovePlayObject(_circleMask, "circle mask");
+        TryRemovePlayObject(_mapGroup, "map group");
+        ReleaseTileResources(Tiles);
         Tiles.Clear();
-        RemoveTexture(_rectangleMask);
-        RemovePlayObject(_circleMask);
-        RemovePlayObject(_mapGroup);
         _rectangleMask = null;
         _rectangleMaskObject = null;
         _circleMask = null;
@@ -1810,17 +1908,15 @@ public sealed class Minimap : ModBase
     {
         foreach (var tile in tiles)
         {
-            try
-            {
-                RemoveTexture(tile.Texture);
-            }
-            catch (Exception exception)
-            {
-                if (Interlocked.Exchange(ref _cleanupErrorReported, 1) == 0)
-                {
-                    Instance.Log($"Map cleanup warning: {exception}", ModLogLevel.Warning);
-                }
-            }
+            TryRemoveTexture(tile.Texture, "map tile");
+        }
+    }
+
+    private static void ReleaseTileResources(IEnumerable<MapTile> tiles)
+    {
+        foreach (var tile in tiles)
+        {
+            TryReleaseResource(tile.Resource, "map tile");
         }
     }
 
@@ -1851,19 +1947,60 @@ public sealed class Minimap : ModBase
 
         foreach (var playObject in matches)
         {
-            try
-            {
-                RemovePlayObject(playObject);
-            }
-            catch (Exception exception)
-            {
-                if (Interlocked.Exchange(ref _cleanupErrorReported, 1) == 0)
-                {
-                    Instance.Log(
-                        $"Stale map cleanup warning: {exception}",
-                        ModLogLevel.Warning);
-                }
-            }
+            TryRemovePlayObject(playObject, "stale map element");
+        }
+    }
+
+    private static void TryRemoveTexture(via.gui.Texture texture, string operation)
+    {
+        try
+        {
+            RemoveTexture(texture);
+        }
+        catch (Exception exception)
+        {
+            LogCleanupWarning(operation, exception);
+        }
+    }
+
+    private static void TryRemovePlayObject(
+        via.gui.PlayObject playObject,
+        string operation)
+    {
+        try
+        {
+            RemovePlayObject(playObject);
+        }
+        catch (Exception exception)
+        {
+            LogCleanupWarning(operation, exception);
+        }
+    }
+
+    private static void TryReleaseResource(
+        REFrameworkNET.Resource resource,
+        string operation)
+    {
+        if (resource is null)
+        {
+            return;
+        }
+
+        try
+        {
+            resource.Release();
+        }
+        catch (Exception exception)
+        {
+            LogCleanupWarning(operation, exception);
+        }
+    }
+
+    private static void LogCleanupWarning(string operation, Exception exception)
+    {
+        if (Interlocked.Exchange(ref _cleanupErrorReported, 1) == 0)
+        {
+            Instance.Log($"{operation} cleanup warning: {exception}", ModLogLevel.Warning);
         }
     }
 
