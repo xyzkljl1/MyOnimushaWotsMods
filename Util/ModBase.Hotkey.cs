@@ -30,8 +30,7 @@ public struct ModHotkey
             return false;
         }
 
-        if (!allowWhenKeyboardCaptured &&
-            Hexa.NET.ImGui.ImGui.GetIO().WantCaptureKeyboard)
+        if (!allowWhenKeyboardCaptured && REFrameworkNET.API.IsDrawingUI())
         {
             return false;
         }
