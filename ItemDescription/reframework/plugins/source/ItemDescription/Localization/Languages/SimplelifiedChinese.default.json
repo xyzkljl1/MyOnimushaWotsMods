@@ -1,7 +1,7 @@
 {
   "PickupPrefix": "拾取：",
   "UnknownBuff": "未知buff",
-  "Duration": "时效 {seconds}秒",
+  "Duration": "{seconds}秒",
   "Value": "{target} {value}{duration}",
   "Regeneration": "{target} {value}{cadence}{duration}",
   "DamageUp": "{target}伤害 +{value}{duration}",
@@ -12,9 +12,7 @@
   "BuffType.SOUL_GENERATE_ATTACK": "命中时释放灵魂{duration}",
   "BuffType.ALWAYS_JUST_ACTION": "{Action.Issen}/{Action.Parry}判定延长{duration}",
   "BuffType.ALL_IMMUNE": "燃烧/沾油无效{duration}",
-  "PerSecond": "/秒",
   "PerSeconds": "/{seconds}秒",
-  "DurationSuffix": " {seconds}秒",
   "ParamTarget.HEALTH": "体力",
   "ParamTarget.RIKIDO": "力动",
   "ParamTarget.SOUL_LOOTBOX_AMOUNT": "灵魂",

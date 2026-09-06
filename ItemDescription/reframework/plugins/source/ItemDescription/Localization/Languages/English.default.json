@@ -1,7 +1,7 @@
 {
   "PickupPrefix": "On pickup: ",
   "UnknownBuff": "Unknown buff",
-  "Duration": "Duration {seconds}s",
+  "Duration": "{seconds}s",
   "Value": "{target} {value}{duration}",
   "Regeneration": "{target} {value}{cadence}{duration}",
   "DamageUp": "{target} damage +{value}{duration}",
@@ -12,9 +12,7 @@
   "BuffType.SOUL_GENERATE_ATTACK": "Attacks release souls on hit{duration}",
   "BuffType.ALWAYS_JUST_ACTION": "{Action.Issen}/{Action.Parry} window extended{duration}",
   "BuffType.ALL_IMMUNE": "Burn/Oil immunity{duration}",
-  "PerSecond": "/s",
   "PerSeconds": "/{seconds}s",
-  "DurationSuffix": " {seconds}s",
   "ParamTarget.HEALTH": "Health",
   "ParamTarget.RIKIDO": "Stamina",
   "ParamTarget.SOUL_LOOTBOX_AMOUNT": "Souls",

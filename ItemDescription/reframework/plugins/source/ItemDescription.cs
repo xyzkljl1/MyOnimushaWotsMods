@@ -892,9 +892,11 @@ public sealed class ItemDescription : ModBase
         {
             var interval = effect._RegenerationIntervalSec;
             var cadence = interval > 0.0f
-                ? MathF.Abs(interval - 1.0f) < 0.0005f
-                    ? Text("PerSecond")
-                    : Render("PerSeconds", seconds: FormatNumber(interval))
+                ? Render(
+                    "PerSeconds",
+                    seconds: MathF.Abs(interval - 1.0f) < 0.0005f
+                        ? string.Empty
+                        : FormatNumber(interval))
                 : string.Empty;
             result = Text("Regeneration");
             Replace(ref result, "{cadence}", cadence);
@@ -925,16 +927,15 @@ public sealed class ItemDescription : ModBase
         var value = buff._ParamValue;
         (string Template, ValueStyle ValueStyle)? rule = target switch
         {
-            BuffType.RIKIDO_DAMAGE_DISABLE =>
+            BuffType.RIKIDO_DAMAGE_DISABLE or
+            BuffType.SOUL_GENERATE_ATTACK or
+            BuffType.ALWAYS_JUST_ACTION or
+            BuffType.ALL_IMMUNE =>
                 ($"BuffType.{target}", ValueStyle.None),
             BuffType.SOUL_ADDITION_UP =>
                 ("Value", ValueStyle.ScaledPercent),
-            BuffType.SOUL_GENERATE_ATTACK =>
-                ($"BuffType.{target}", ValueStyle.None),
             BuffType.GAS_IMMUNE =>
                 ("EffectReduction", ValueStyle.FullReduction),
-            BuffType.ALWAYS_JUST_ACTION =>
-                ($"BuffType.{target}", ValueStyle.None),
             BuffType.HP_DAMAGE_CUT or
             BuffType.GAS_STATUS_DAMAGE_CUT =>
                 ("EffectReduction", ValueStyle.Reduction),
@@ -946,8 +947,6 @@ public sealed class ItemDescription : ModBase
             BuffType.HP_DAMAGE_UP or
             BuffType.RIKIDO_DAMAGE_UP =>
                 ("DamageUp", ValueStyle.ScaledPercent),
-            BuffType.ALL_IMMUNE =>
-                ($"BuffType.{target}", ValueStyle.None),
             _ => null,
         };
         if (rule is not { } format)
@@ -992,7 +991,7 @@ public sealed class ItemDescription : ModBase
 
     private static string DurationSuffix(float seconds) =>
         seconds > 0.0f
-            ? Render("DurationSuffix", seconds: FormatNumber(seconds))
+            ? " " + Render("Duration", seconds: FormatNumber(seconds))
             : string.Empty;
 
     private static string FormatSignedTypedValue(
