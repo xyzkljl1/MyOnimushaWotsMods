@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using System.Threading;
 using Hexa.NET.ImGui;
 using REFrameworkNET;
@@ -878,22 +877,17 @@ public abstract partial class ModBase
 public sealed class Minimap : ModBase
 {
     private const int TilePixels = 2048;
-    private const float WorldToMapPixels = 6.40000009536743f;
-    private const string TileNamePrefix = "Minimap_";
-    private const string LegacyTileNamePrefix = "LittleMap_";
-    private const int SetPlayObjectNameRva = 0x08afd3a0;
+    private const float WorldToMapPixels = 6.4f;
+    private const int TileSlotCount = 16;
+    private const string GuiResourcePath = "GUI/Minimap/Minimap.gui";
+    private const string GuiGameObjectName = "Minimap_GUI";
+    private const string GroupName = "Minimap_Group";
+    private const string CircleMaskName = "Minimap_CircleMask";
+    private const string RectangleMaskName = "Minimap_RectangleMask";
+    private const string TileNamePrefix = "Minimap_Tile_";
     private const long RetryDelayMilliseconds = 1000;
+    private const long GuiLoadTimeoutMilliseconds = 10000;
     private const ushort MapDrawPriority = ushort.MaxValue;
-
-    private static readonly byte[] SetPlayObjectNameSignature =
-    {
-        0x41, 0x56, 0x56, 0x57, 0x53, 0x48, 0x83, 0xec,
-        0x28, 0x48, 0x89, 0xd6, 0x49, 0x8b, 0x38, 0xf6,
-        0x42, 0x50, 0x40, 0x74, 0x1d, 0x48, 0x8b, 0x4e,
-        0x10, 0x48, 0x85, 0xc9, 0x74, 0x0d, 0xe8, 0x3d,
-        0x83, 0xce, 0xfb, 0x48, 0xc7, 0x46, 0x10, 0x00,
-        0x00, 0x00, 0x00, 0xc7, 0x46, 0x58, 0xff, 0xff,
-    };
 
     private const uint BorderColor = 0xE0D0B070;
     private const uint PlayerOutlineColor = 0xF0000000;
@@ -933,16 +927,16 @@ public sealed class Minimap : ModBase
 
     private static MapDefinition _map;
     private static OverlaySnapshot _overlay;
-    private static ManagedObject _mapGroupObject;
+    private static REFrameworkNET.Resource _guiResource;
+    private static ManagedObject _guiHolderObject;
+    private static via.GameObject _guiGameObject;
+    private static via.gui.GUI _gui;
+    private static via.gui.View _guiView;
     private static via.gui.Panel _mapGroup;
-    private static ManagedObject _circleMaskObject;
     private static via.gui.Circle _circleMask;
-    private static ManagedObject _rectangleMaskObject;
     private static via.gui.Texture _rectangleMask;
-    private static REFrameworkNET.Resource _maskResource;
-    private static ManagedObject _maskHolderObject;
-    private static ulong _hudRootAddress;
-    private static SetPlayObjectNameDelegate _setPlayObjectName;
+    private static via.gui.Texture[] _tileSlots = Array.Empty<via.gui.Texture>();
+    private static long _guiLoadStartedAt;
     private static long _nextRetryTick;
     private static int _errorReported;
     private static int _cleanupErrorReported;
@@ -980,6 +974,7 @@ public sealed class Minimap : ModBase
     {
         Volatile.Write(ref _overlay, null);
         ResetMap();
+        DestroyNativeGui();
         _nextRetryTick = 0;
         _errorReported = 0;
         _cleanupErrorReported = 0;
@@ -1006,9 +1001,14 @@ public sealed class Minimap : ModBase
                 return;
             }
 
-            var rootAddress = GetAddress(root);
+            if (Environment.TickCount64 < _nextRetryTick || !TryEnsureNativeGui())
+            {
+                HideMap();
+                return;
+            }
+
             var stageKey = unchecked((int)(uint)fixedStage);
-            if (_map is null || _map.StageKey != stageKey || _hudRootAddress != rootAddress)
+            if (_map is null || _map.StageKey != stageKey)
             {
                 if (Environment.TickCount64 < _nextRetryTick)
                 {
@@ -1017,7 +1017,6 @@ public sealed class Minimap : ModBase
                 }
 
                 ResetMap();
-                RemoveNamedElements(root);
                 if (!TryBuildMap(guiManager, fixedStage, out var map))
                 {
                     _nextRetryTick = Environment.TickCount64 + RetryDelayMilliseconds;
@@ -1025,21 +1024,20 @@ public sealed class Minimap : ModBase
                     return;
                 }
 
-                if (!TryCreateMapGroup(root))
+                if (map.Tiles.Length > _tileSlots.Length)
                 {
-                    _nextRetryTick = Environment.TickCount64 + RetryDelayMilliseconds;
-                    HideMap();
-                    return;
+                    throw new InvalidOperationException(
+                        $"Map needs {map.Tiles.Length} texture slots, " +
+                        $"but the prefab provides {_tileSlots.Length}.");
                 }
 
                 _map = map;
-                _hudRootAddress = rootAddress;
             }
 
             if (Tiles.Count < _map.Tiles.Length)
             {
                 if (Environment.TickCount64 < _nextRetryTick ||
-                    !TryCreateNextTile(_mapGroup, _map))
+                    !TryCreateNextTile(_map))
                 {
                     _nextRetryTick = Environment.TickCount64 + RetryDelayMilliseconds;
                     HideMap();
@@ -1062,6 +1060,12 @@ public sealed class Minimap : ModBase
             {
                 HideMap();
                 return;
+            }
+
+            var nativeScreen = _guiView.ScreenSize;
+            if (nativeScreen.w != screen.w || nativeScreen.h != screen.h)
+            {
+                _guiView.ScreenSize = screen;
             }
 
             var displayWidth = Math.Clamp(Instance._width.Value, 1.0f, screen.w);
@@ -1393,56 +1397,50 @@ public sealed class Minimap : ModBase
         return true;
     }
 
-    private static bool TryCreateMapGroup(via.gui.View root)
+    private static bool TryEnsureNativeGui()
     {
-        via.gui.Panel group = null;
-        via.gui.Circle circle = null;
         try
         {
-            var groupObject = via.gui.Panel.REFType.CreateInstance(0);
-            group = groupObject?.TryAs<via.gui.Panel>();
-            var circleObject = via.gui.Circle.REFType.CreateInstance(0);
-            circle = circleObject?.TryAs<via.gui.Circle>();
-            if (!IsAlive(group) || !IsAlive(circle))
+            if (!IsAlive(_gui))
             {
-                throw new InvalidOperationException("Could not create the map mask group.");
+                ResetMap();
+                DestroyNativeGui();
+                CreateNativeGui();
+                return false;
             }
 
-            group.Visible = false;
-            group.MaskMode = via.gui.MaskMode.Keep;
-            SetPlayObjectName(group, $"{TileNamePrefix}Group");
-            if (!root.addChildByScript(group))
+            if (!_gui.Ready || !IsAlive(_gui.View))
             {
-                throw new InvalidOperationException(
-                    "addChildByScript returned false for the map group.");
+                if (Environment.TickCount64 - _guiLoadStartedAt >=
+                    GuiLoadTimeoutMilliseconds)
+                {
+                    throw new TimeoutException(
+                        $"GUI resource did not become ready: {GuiResourcePath}.");
+                }
+
+                return false;
             }
 
-            group.Priority = MapDrawPriority;
-
-            circle.Visible = false;
-            circle.MaskType = via.gui.MaskType.Mask;
-            circle.ControlPoint = via.gui.ControlPoint.CenterCenter;
-            SetPlayObjectName(circle, $"{TileNamePrefix}CircleMask");
-            if (!group.addChildByScript(circle))
+            if (IsAlive(_mapGroup) && IsAlive(_circleMask) &&
+                IsAlive(_rectangleMask) && _tileSlots.Length == TileSlotCount &&
+                Array.TrueForAll(_tileSlots, IsAlive))
             {
-                throw new InvalidOperationException(
-                    "addChildByScript returned false for the circle mask.");
+                return true;
             }
 
-            _mapGroupObject = groupObject;
-            _mapGroup = group;
-            _circleMaskObject = circleObject;
-            _circleMask = circle;
+            ResolveNativeGui(_gui.View);
+            Instance.Log("Loaded the prebuilt native GUI resource.");
             return true;
         }
         catch (Exception exception)
         {
-            TryRemovePlayObject(circle, "map circle rollback");
-            TryRemovePlayObject(group, "map group rollback");
+            ResetMap();
+            DestroyNativeGui();
+            _nextRetryTick = Environment.TickCount64 + RetryDelayMilliseconds;
             if (Interlocked.Exchange(ref _errorReported, 1) == 0)
             {
                 Instance.Log(
-                    $"Native map group creation will retry: {exception}",
+                    $"Native GUI loading will retry: {exception}",
                     ModLogLevel.Error);
             }
 
@@ -1450,13 +1448,129 @@ public sealed class Minimap : ModBase
         }
     }
 
-    private static bool TryCreateNextTile(
-        via.gui.Panel group,
-        MapDefinition map)
+    private static void CreateNativeGui()
+    {
+        _guiResource = API.GetResourceManager().CreateResource(
+            "via.gui.GUIResource", GuiResourcePath);
+        _guiHolderObject = _guiResource?.CreateHolder("via.gui.GUIResourceHolder");
+        var holder = _guiHolderObject?.TryAs<via.gui.GUIResourceHolder>();
+        if (_guiResource is null || !IsAlive(holder))
+        {
+            throw new InvalidOperationException(
+                $"Could not create GUI resource holder for {GuiResourcePath}.");
+        }
+
+        _guiGameObject = via.GameObject.create(GuiGameObjectName);
+        var runtimeType = via.gui.GUI.REFType.RuntimeType?.As<_System.Type>();
+        var component = _guiGameObject?.createComponent(runtimeType);
+        _gui = ManagedObject.ToManagedObject(GetAddress(component))?.TryAs<via.gui.GUI>();
+        if (!IsAlive(_guiGameObject) || !IsAlive(_gui))
+        {
+            throw new InvalidOperationException("Could not create the Minimap GUI component.");
+        }
+
+        _gui.Enabled = false;
+        _gui.Asset = holder;
+        _guiLoadStartedAt = Environment.TickCount64;
+    }
+
+    private static void ResolveNativeGui(via.gui.View view)
+    {
+        _guiView = view;
+        _guiView.Visible = true;
+        _guiView.HitVisible = false;
+        _guiView.Interactive = false;
+        _mapGroup = FindNamedPlayObject(view, GroupName)?.TryAs<via.gui.Panel>();
+        _circleMask = FindNamedPlayObject(view, CircleMaskName)?.TryAs<via.gui.Circle>();
+        _rectangleMask = FindNamedPlayObject(view, RectangleMaskName)
+            ?.TryAs<via.gui.Texture>();
+        var slots = new via.gui.Texture[TileSlotCount];
+        for (var index = 0; index < slots.Length; ++index)
+        {
+            slots[index] = FindNamedPlayObject(view, $"{TileNamePrefix}{index:00}")
+                ?.TryAs<via.gui.Texture>();
+        }
+
+        if (!IsAlive(_mapGroup) || !IsAlive(_circleMask) ||
+            !IsAlive(_rectangleMask) || Array.Exists(slots, slot => !IsAlive(slot)))
+        {
+            throw new InvalidOperationException(
+                "The Minimap GUI resource does not contain the expected named nodes.");
+        }
+
+        _tileSlots = slots;
+        _mapGroup.Visible = false;
+        _mapGroup.HitVisible = false;
+        _mapGroup.Interactive = false;
+        _mapGroup.MaskMode = via.gui.MaskMode.Keep;
+        _mapGroup.Priority = MapDrawPriority;
+
+        _circleMask.Visible = false;
+        _circleMask.HitVisible = false;
+        _circleMask.MaskType = via.gui.MaskType.Mask;
+        _circleMask.ControlPoint = via.gui.ControlPoint.CenterCenter;
+
+        _rectangleMask.Visible = false;
+        _rectangleMask.HitVisible = false;
+        _rectangleMask.AssetType = via.gui.TextureAssetType.Texture;
+        _rectangleMask.UVType = via.gui.UVValueType.Rect;
+        _rectangleMask.ControlPoint = via.gui.ControlPoint.LeftTop;
+        _rectangleMask.MaskType = via.gui.MaskType.Mask;
+
+        foreach (var slot in _tileSlots)
+        {
+            slot.Visible = false;
+            slot.HitVisible = false;
+            slot.AssetType = via.gui.TextureAssetType.Texture;
+            slot.UVType = via.gui.UVValueType.Rect;
+            slot.ControlPoint = via.gui.ControlPoint.CenterCenter;
+            slot.MaskType = via.gui.MaskType.Target;
+        }
+    }
+
+    private static ManagedObject FindNamedPlayObject(
+        via.gui.PlayObject root,
+        string name)
+    {
+        var inspected = 0;
+        return FindNamedPlayObject(root, name, 0, ref inspected);
+    }
+
+    private static ManagedObject FindNamedPlayObject(
+        via.gui.PlayObject playObject,
+        string name,
+        int depth,
+        ref int inspected)
+    {
+        if (!IsAlive(playObject) || depth >= 16 || inspected++ >= 128)
+        {
+            return null;
+        }
+
+        if (string.Equals(playObject.Name, name, StringComparison.Ordinal))
+        {
+            return ManagedObject.ToManagedObject(GetAddress(playObject));
+        }
+
+        var control = ManagedObject.ToManagedObject(GetAddress(playObject))
+            ?.TryAs<via.gui.Control>();
+        for (var child = control?.Child; IsAlive(child); child = child.Next)
+        {
+            var match = FindNamedPlayObject(child, name, depth + 1, ref inspected);
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryCreateNextTile(MapDefinition map)
     {
         REFrameworkNET.Resource resource = null;
         via.gui.Texture texture = null;
-        var createdRectangleMask = false;
+        var configuredRectangleMask = false;
         try
         {
             var definition = map.Tiles[Tiles.Count];
@@ -1466,8 +1580,7 @@ public sealed class Minimap : ModBase
             var holderObject = resource?.CreateHolder(
                 "via.render.TextureResourceHolder");
             var holder = holderObject?.TryAs<via.render.TextureResourceHolder>();
-            var textureObject = via.gui.Texture.REFType.CreateInstance(0);
-            texture = textureObject?.TryAs<via.gui.Texture>();
+            texture = _tileSlots[Tiles.Count];
             if (resource is null || !IsAlive(holder) || !IsAlive(texture))
             {
                 throw new InvalidOperationException(
@@ -1478,21 +1591,13 @@ public sealed class Minimap : ModBase
             texture.AssetType = via.gui.TextureAssetType.Texture;
             texture.UVType = via.gui.UVValueType.Rect;
             texture.ControlPoint = via.gui.ControlPoint.CenterCenter;
+            texture.MaskType = via.gui.MaskType.Target;
             texture.setTexture(holder);
-            SetPlayObjectName(
-                texture,
-                $"{TileNamePrefix}{definition.Row}_{definition.Column}");
-            if (_rectangleMask is null)
+            if (Tiles.Count == 0)
             {
-                TryCreateRectangleMask(group, resource, holderObject, holder);
-                createdRectangleMask = true;
-            }
-
-            if (!group.addChildByScript(texture))
-            {
-                throw new InvalidOperationException(
-                    $"addChildByScript returned false for " +
-                    $"tile [{definition.Row},{definition.Column}].");
+                _rectangleMask.setTexture(holder);
+                SetCrop(_rectangleMask, TilePixels / 2, TilePixels / 2, 1, 1);
+                configuredRectangleMask = true;
             }
 
             Tiles.Add(new MapTile(
@@ -1500,21 +1605,16 @@ public sealed class Minimap : ModBase
                 definition.Column,
                 resource,
                 holderObject,
-                textureObject,
                 texture));
             resource = null;
             return true;
         }
         catch (Exception exception)
         {
-            TryRemoveTexture(texture, "map tile rollback");
-            if (createdRectangleMask)
+            TryClearTexture(texture, "map tile rollback");
+            if (configuredRectangleMask)
             {
-                TryRemoveTexture(_rectangleMask, "rectangle mask rollback");
-                _rectangleMask = null;
-                _rectangleMaskObject = null;
-                _maskResource = null;
-                _maskHolderObject = null;
+                TryClearTexture(_rectangleMask, "rectangle mask rollback");
             }
 
             TryReleaseResource(resource, "map tile rollback");
@@ -1524,48 +1624,6 @@ public sealed class Minimap : ModBase
             }
 
             return false;
-        }
-    }
-
-    private static void TryCreateRectangleMask(
-        via.gui.Panel group,
-        REFrameworkNET.Resource resource,
-        ManagedObject holderObject,
-        via.render.TextureResourceHolder holder)
-    {
-        via.gui.Texture mask = null;
-        try
-        {
-            var maskObject = via.gui.Texture.REFType.CreateInstance(0);
-            mask = maskObject?.TryAs<via.gui.Texture>();
-            if (!IsAlive(mask))
-            {
-                throw new InvalidOperationException("Could not create the rectangle mask.");
-            }
-
-            mask.Visible = false;
-            mask.AssetType = via.gui.TextureAssetType.Texture;
-            mask.UVType = via.gui.UVValueType.Rect;
-            mask.ControlPoint = via.gui.ControlPoint.LeftTop;
-            mask.MaskType = via.gui.MaskType.Mask;
-            mask.setTexture(holder);
-            SetCrop(mask, TilePixels / 2, TilePixels / 2, 1, 1);
-            SetPlayObjectName(mask, $"{TileNamePrefix}RectangleMask");
-            if (!group.addChildByScript(mask))
-            {
-                throw new InvalidOperationException(
-                    "addChildByScript returned false for the rectangle mask.");
-            }
-
-            _rectangleMaskObject = maskObject;
-            _rectangleMask = mask;
-            _maskResource = resource;
-            _maskHolderObject = holderObject;
-        }
-        catch
-        {
-            TryRemoveTexture(mask, "rectangle mask rollback");
-            throw;
         }
     }
 
@@ -1684,6 +1742,7 @@ public sealed class Minimap : ModBase
         }
 
         _mapGroup.Visible = true;
+        _gui.Enabled = true;
     }
 
     private static void UpdateMasks(
@@ -1724,65 +1783,6 @@ public sealed class Minimap : ModBase
             _rectangleMask.Visible = !isCircle && isRotated;
         }
     }
-
-    private static void SetPlayObjectName(via.gui.PlayObject playObject, string name)
-    {
-        var setter = GetSetPlayObjectName();
-        var text = Marshal.StringToHGlobalUni(name);
-        try
-        {
-            setter(IntPtr.Zero, new IntPtr((long)GetAddress(playObject)), ref text);
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(text);
-        }
-
-        if (!string.Equals(playObject.Name, name, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException($"Could not name play object {name}.");
-        }
-    }
-
-    private static SetPlayObjectNameDelegate GetSetPlayObjectName()
-    {
-        if (_setPlayObjectName is not null)
-        {
-            return _setPlayObjectName;
-        }
-
-        using var process = System.Diagnostics.Process.GetCurrentProcess();
-        using var module = process.MainModule ??
-            throw new InvalidOperationException("Could not inspect the game module.");
-        if (SetPlayObjectNameRva < 0 ||
-            SetPlayObjectNameRva > module.ModuleMemorySize - SetPlayObjectNameSignature.Length)
-        {
-            throw new InvalidOperationException(
-                "The native play-object name setter is outside the game module.");
-        }
-
-        var address = IntPtr.Add(module.BaseAddress, SetPlayObjectNameRva);
-        var actual = new byte[SetPlayObjectNameSignature.Length];
-        Marshal.Copy(address, actual, 0, actual.Length);
-        for (var index = 0; index < actual.Length; index++)
-        {
-            if (actual[index] != SetPlayObjectNameSignature[index])
-            {
-                throw new InvalidOperationException(
-                    "The game build is incompatible with the native map renderer.");
-            }
-        }
-
-        _setPlayObjectName =
-            Marshal.GetDelegateForFunctionPointer<SetPlayObjectNameDelegate>(address);
-        return _setPlayObjectName;
-    }
-
-    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
-    private delegate void SetPlayObjectNameDelegate(
-        IntPtr context,
-        IntPtr instance,
-        ref IntPtr value);
 
     private static void SetCrop(
         via.gui.Texture texture,
@@ -1881,34 +1881,28 @@ public sealed class Minimap : ModBase
             _mapGroup.Visible = false;
         }
 
+        if (IsAlive(_gui))
+        {
+            _gui.Enabled = false;
+        }
+
         Volatile.Write(ref _overlay, null);
     }
 
     private static void ResetMap()
     {
-        TryRemoveTexture(_rectangleMask, "rectangle mask");
-        RemoveTiles(Tiles);
-        TryRemovePlayObject(_circleMask, "circle mask");
-        TryRemovePlayObject(_mapGroup, "map group");
+        TryClearTexture(_rectangleMask, "rectangle mask");
+        ClearTileTextures(Tiles);
         ReleaseTileResources(Tiles);
         Tiles.Clear();
-        _rectangleMask = null;
-        _rectangleMaskObject = null;
-        _circleMask = null;
-        _circleMaskObject = null;
-        _mapGroup = null;
-        _mapGroupObject = null;
-        _maskHolderObject = null;
-        _maskResource = null;
         _map = null;
-        _hudRootAddress = 0;
     }
 
-    private static void RemoveTiles(IEnumerable<MapTile> tiles)
+    private static void ClearTileTextures(IEnumerable<MapTile> tiles)
     {
         foreach (var tile in tiles)
         {
-            TryRemoveTexture(tile.Texture, "map tile");
+            TryClearTexture(tile.Texture, "map tile");
         }
     }
 
@@ -1920,56 +1914,43 @@ public sealed class Minimap : ModBase
         }
     }
 
-    private static void RemoveNamedElements(via.gui.View root)
-    {
-        if (!IsAlive(root))
-        {
-            return;
-        }
-
-        var matches = new List<via.gui.PlayObject>();
-        var inspected = 0;
-        for (var child = root.Child;
-             child is not null && inspected++ < 2048;
-             child = child.Next)
-        {
-            if (child.Name?.StartsWith(TileNamePrefix, StringComparison.Ordinal) != true &&
-                child.Name?.StartsWith(LegacyTileNamePrefix, StringComparison.Ordinal) != true)
-            {
-                continue;
-            }
-
-            if (IsAlive(child))
-            {
-                matches.Add(child);
-            }
-        }
-
-        foreach (var playObject in matches)
-        {
-            TryRemovePlayObject(playObject, "stale map element");
-        }
-    }
-
-    private static void TryRemoveTexture(via.gui.Texture texture, string operation)
+    private static void DestroyNativeGui()
     {
         try
         {
-            RemoveTexture(texture);
+            if (IsAlive(_gui))
+            {
+                _gui.Enabled = false;
+            }
+
+            if (IsAlive(_guiGameObject))
+            {
+                via.GameObject.destroy(_guiGameObject);
+            }
         }
         catch (Exception exception)
         {
-            LogCleanupWarning(operation, exception);
+            LogCleanupWarning("native GUI", exception);
         }
+
+        _tileSlots = Array.Empty<via.gui.Texture>();
+        _rectangleMask = null;
+        _circleMask = null;
+        _mapGroup = null;
+        _guiView = null;
+        _gui = null;
+        _guiGameObject = null;
+        _guiHolderObject = null;
+        _guiLoadStartedAt = 0;
+        TryReleaseResource(_guiResource, "native GUI");
+        _guiResource = null;
     }
 
-    private static void TryRemovePlayObject(
-        via.gui.PlayObject playObject,
-        string operation)
+    private static void TryClearTexture(via.gui.Texture texture, string operation)
     {
         try
         {
-            RemovePlayObject(playObject);
+            ClearTexture(texture);
         }
         catch (Exception exception)
         {
@@ -2004,7 +1985,7 @@ public sealed class Minimap : ModBase
         }
     }
 
-    private static void RemoveTexture(via.gui.Texture texture)
+    private static void ClearTexture(via.gui.Texture texture)
     {
         if (!IsAlive(texture))
         {
@@ -2016,18 +1997,7 @@ public sealed class Minimap : ModBase
         size.w = 0.0f;
         size.h = 0.0f;
         texture.Size = size;
-        texture.remove();
-    }
-
-    private static void RemovePlayObject(via.gui.PlayObject playObject)
-    {
-        if (!IsAlive(playObject))
-        {
-            return;
-        }
-
-        playObject.Visible = false;
-        playObject.remove();
+        texture.setTexture(null);
     }
 
     private static bool IsAlive(object proxy)
@@ -2089,14 +2059,12 @@ public sealed class Minimap : ModBase
             int column,
             REFrameworkNET.Resource resource,
             ManagedObject holderObject,
-            ManagedObject textureObject,
             via.gui.Texture texture)
         {
             Row = row;
             Column = column;
             Resource = resource;
             HolderObject = holderObject;
-            TextureObject = textureObject;
             Texture = texture;
         }
 
@@ -2104,7 +2072,6 @@ public sealed class Minimap : ModBase
         public int Column { get; }
         public REFrameworkNET.Resource Resource { get; }
         public ManagedObject HolderObject { get; }
-        public ManagedObject TextureObject { get; }
         public via.gui.Texture Texture { get; }
     }
 
