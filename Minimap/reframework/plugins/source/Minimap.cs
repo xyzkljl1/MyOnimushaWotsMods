@@ -719,7 +719,7 @@ public sealed class Minimap : ModBase
     private static int _errorReported;
     private static int _cleanupErrorReported;
 
-    private Minimap() : base("Minimap", "1.1")
+    private Minimap() : base("Minimap", "1.0")
     {
         _enabled = AddBoolConfig("Enabled on startup", true, "Enabled");
         _effectiveEnabled = _lastConfiguredEnabled = _enabled.Value;
