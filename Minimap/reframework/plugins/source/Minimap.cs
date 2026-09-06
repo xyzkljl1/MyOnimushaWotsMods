@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Numerics;
 using System.Threading;
 using Hexa.NET.ImGui;
 using REFrameworkNET;
@@ -9,7 +8,7 @@ using REFrameworkNET.Callbacks;
 
 // BEGIN copied source: Util/ModBase.cs
 // Source blob SHA-1: 25417359db8c70a84c6f557d62440b857d2d6419
-// Source commit: de5b215e98b70a81b36e603e07217f2525355e91
+// Source commit: 7eadaa1411ca922a2fbbf34f067928275e4c53ec
 // I do this to avoid panicing users. Copying code everythere instead of publishing a DLL is indeed stupid, but users’ antivirus software is stupider.
 // Module: Mod identity, logging, one-time error reporting, and managed-object helpers.
 public enum ModLogLevel
@@ -95,8 +94,8 @@ public abstract partial class ModBase
 // END copied source: Util/ModBase.cs
 
 // BEGIN copied source: Util/ModBase.Config.cs
-// Source blob SHA-1: 02d517f015079cc14be1e5d6ebec066fa8e2f8d8
-// Source commit: de5b215e98b70a81b36e603e07217f2525355e91
+// Source blob SHA-1: 23b9c5bcce310f6c969aa06b2652f0cc75136b72
+// Source commit: 7eadaa1411ca922a2fbbf34f067928275e4c53ec
 // Module: ModBase configuration, persistence, and ImGui helpers.
 // Requires: Util/ModBase.cs from the same committed Git revision.
 public delegate bool ModConfigRenderer<T>(string label, ref T value);
@@ -305,6 +304,28 @@ public abstract partial class ModBase
                     format),
             key);
 
+    protected ModConfig<float> AddPixelInputConfig(
+        string name,
+        float defaultValue,
+        float minimum,
+        float maximum,
+        string key = null)
+    {
+        if (!float.IsFinite(defaultValue) || !float.IsFinite(minimum) ||
+            !float.IsFinite(maximum) || minimum > maximum ||
+            defaultValue < minimum || defaultValue > maximum)
+        {
+            throw new System.ArgumentOutOfRangeException(nameof(defaultValue));
+        }
+
+        return AddConfig(
+            name,
+            System.MathF.Round(defaultValue),
+            (string label, ref float value) =>
+                DrawPixelInput(label, ref value, minimum, maximum),
+            key);
+    }
+
     protected void InitializeMod()
     {
         SaveConfig();
@@ -373,6 +394,28 @@ public abstract partial class ModBase
         }
 
         return changed;
+    }
+
+    private static bool DrawPixelInput(
+        string label,
+        ref float value,
+        float minimum,
+        float maximum)
+    {
+        var original = value;
+        if (!float.IsFinite(value))
+        {
+            value = minimum;
+        }
+
+        var changed = Hexa.NET.ImGui.ImGui.InputFloat(
+            label,
+            ref value,
+            1.0f,
+            100.0f,
+            "%.0f");
+        value = System.Math.Clamp(System.MathF.Round(value), minimum, maximum);
+        return changed || value != original;
     }
 
     protected void DrawCollapsible(
@@ -516,7 +559,7 @@ public abstract partial class ModBase
 
 // BEGIN copied source: Util/ModBase.Hotkey.cs
 // Source blob SHA-1: 9aba964758d536ae9257a9953438bf77a5b3af9a
-// Source commit: de5b215e98b70a81b36e603e07217f2525355e91
+// Source commit: 7eadaa1411ca922a2fbbf34f067928275e4c53ec
 // Module: Persistent keyboard/gamepad shortcuts and their ImGui editor.
 // Requires: Util/ModBase.cs and Util/ModBase.Config.cs from the same commit.
 // Add a binding with AddHotkeyConfig(), then call IsHotkeyPressed() once per frame.
@@ -881,19 +924,35 @@ public sealed class Minimap : ModBase
     private const int TileSlotCount = 16;
     private const string GuiResourcePath = "GUI/Minimap/Minimap.gui";
     private const string GuiGameObjectName = "Minimap_GUI";
+    private const string WindowName = "Minimap_Window";
     private const string GroupName = "Minimap_Group";
+    private const string OverlayGroupName = "Minimap_OverlayGroup";
     private const string CircleMaskName = "Minimap_CircleMask";
     private const string RectangleMaskName = "Minimap_RectangleMask";
+    private const string CircleBorderName = "Minimap_CircleBorder";
+    private const string BorderNamePrefix = "Minimap_Border_";
+    private const string PlayerArrowOutlinePrefix = "Minimap_PlayerArrowOutline_";
+    private const string PlayerArrowPrefix = "Minimap_PlayerArrow_";
+    private const string CameraArrowOutlinePrefix = "Minimap_CameraArrowOutline_";
+    private const string CameraArrowPrefix = "Minimap_CameraArrow_";
     private const string TileNamePrefix = "Minimap_Tile_";
     private const long RetryDelayMilliseconds = 1000;
     private const long GuiLoadTimeoutMilliseconds = 10000;
-    private const ushort MapDrawPriority = ushort.MaxValue;
-
-    private const uint BorderColor = 0xE0D0B070;
-    private const uint PlayerOutlineColor = 0xF0000000;
-    private const uint PlayerColor = 0xFF50E8FF;
-    private const uint CameraOutlineColor = 0xE0000000;
-    private const uint CameraColor = 0xFFFFA050;
+    private const ushort MapDrawPriority = ushort.MaxValue - 1;
+    private const ushort OverlayDrawPriority = ushort.MaxValue;
+    private const float BorderThickness = 1.5f;
+    private const float PlayerTipDistance = 13.0f;
+    private const float PlayerRearDistance = 8.0f;
+    private const float PlayerHalfWidth = 7.0f;
+    private const float CameraTipDistance = 42.0f;
+    private const float CameraRearDistance = 25.0f;
+    private const float CameraHalfWidth = 9.0f;
+    private const int PlayerFillPartCount = 9;
+    private const float PlayerFillOverlap = 0.75f;
+    private const float PlayerOutlineThickness = 4.0f;
+    private const float CameraOutlineThickness = 7.0f;
+    private const float CameraArrowThickness = 4.5f;
+    private const float MaximumOffset = 16383.0f;
 
     private const int MapFixed = 0;
     private const int PlayerFixed = 1;
@@ -926,22 +985,29 @@ public sealed class Minimap : ModBase
     private bool _isVisible = true;
 
     private static MapDefinition _map;
-    private static OverlaySnapshot _overlay;
     private static REFrameworkNET.Resource _guiResource;
     private static ManagedObject _guiHolderObject;
     private static via.GameObject _guiGameObject;
     private static via.gui.GUI _gui;
     private static via.gui.View _guiView;
+    private static via.gui.Window _guiWindow;
     private static via.gui.Panel _mapGroup;
+    private static via.gui.Panel _overlayGroup;
     private static via.gui.Circle _circleMask;
+    private static via.gui.Circle _circleBorder;
     private static via.gui.Texture _rectangleMask;
+    private static via.gui.Rect[] _rectangleBorders = Array.Empty<via.gui.Rect>();
+    private static via.gui.Rect[] _playerArrowOutlines = Array.Empty<via.gui.Rect>();
+    private static via.gui.Rect[] _playerArrows = Array.Empty<via.gui.Rect>();
+    private static via.gui.Rect[] _cameraArrowOutlines = Array.Empty<via.gui.Rect>();
+    private static via.gui.Rect[] _cameraArrows = Array.Empty<via.gui.Rect>();
     private static via.gui.Texture[] _tileSlots = Array.Empty<via.gui.Texture>();
     private static long _guiLoadStartedAt;
     private static long _nextRetryTick;
     private static int _errorReported;
     private static int _cleanupErrorReported;
 
-    private Minimap() : base("Minimap", "1.0")
+    private Minimap() : base("Minimap", "1.1")
     {
         _toggleHotkey = AddHotkeyConfig("Toggle hotkey", ImGuiKey.F6);
         _orientation = AddRadioGroupConfig(
@@ -956,10 +1022,10 @@ public sealed class Minimap : ModBase
         _height = AddFloatConfig("Height", 280.0f, 20.0f, 540.0f, "%.0f");
         _pixelsPerMeter = AddFloatConfig(
             "Zoom", 4.8f, 2.0f, 10.0f, "%.1f px/m");
-        _rightOffset = AddFloatConfig(
-            "Right offset", 36.0f, 0.0f, 3839.0f, "%.0f", key: "Right margin");
-        _topOffset = AddFloatConfig(
-            "Top offset", 80.0f, 0.0f, 2159.0f, "%.0f", key: "Top margin");
+        _rightOffset = AddPixelInputConfig(
+            "Right offset (px)", 36.0f, 0.0f, MaximumOffset, key: "Right margin");
+        _topOffset = AddPixelInputConfig(
+            "Top offset (px)", 80.0f, 0.0f, MaximumOffset, key: "Top margin");
     }
 
     [PluginEntryPoint]
@@ -972,7 +1038,6 @@ public sealed class Minimap : ModBase
     [PluginExitPoint]
     public static void OnUnload()
     {
-        Volatile.Write(ref _overlay, null);
         ResetMap();
         DestroyNativeGui();
         _nextRetryTick = 0;
@@ -1108,25 +1173,17 @@ public sealed class Minimap : ModBase
                 displayHeight,
                 mapRotation,
                 Instance._shape.Value == CircleShape);
-
-            var present = root.Component?.SceneView?.PresentRect ?? default;
-            Volatile.Write(ref _overlay, new OverlaySnapshot(
+            UpdateNativeOverlay(
                 left,
                 top,
                 displayWidth,
                 displayHeight,
-                screen.w,
-                screen.h,
-                present.l,
-                present.t,
-                present.w,
-                present.h,
                 playerFixed ? 0.0f : forwardX,
                 playerFixed ? -1.0f : forwardY,
                 cameraForwardX,
                 cameraForwardY,
                 hasCameraDirection,
-                Instance._shape.Value == CircleShape));
+                Instance._shape.Value == CircleShape);
             Volatile.Write(ref _errorReported, 0);
         }
         catch (Exception exception)
@@ -1135,84 +1192,6 @@ public sealed class Minimap : ModBase
             if (Interlocked.Exchange(ref _errorReported, 1) == 0)
             {
                 Instance.Log($"Map update failed and will retry: {exception}", ModLogLevel.Error);
-            }
-        }
-    }
-
-    [Callback(typeof(ImGuiRender), CallbackType.Post)]
-    public static void OnImGuiRender()
-    {
-        var snapshot = Volatile.Read(ref _overlay);
-        if (snapshot is null)
-        {
-            return;
-        }
-
-        try
-        {
-            var viewport = ImGui.GetMainViewport();
-            var origin = viewport.Pos;
-            var targetSize = viewport.Size;
-            if (snapshot.PresentWidth > 0.0f && snapshot.PresentHeight > 0.0f)
-            {
-                origin += new Vector2(snapshot.PresentLeft, snapshot.PresentTop);
-                targetSize = new Vector2(snapshot.PresentWidth, snapshot.PresentHeight);
-            }
-
-            if (targetSize.X <= 0.0f || targetSize.Y <= 0.0f ||
-                snapshot.VirtualWidth <= 0.0f || snapshot.VirtualHeight <= 0.0f)
-            {
-                return;
-            }
-
-            var scale = new Vector2(
-                targetSize.X / snapshot.VirtualWidth,
-                targetSize.Y / snapshot.VirtualHeight);
-            var minimum = origin + new Vector2(snapshot.Left, snapshot.Top) * scale;
-            var maximum = minimum + new Vector2(snapshot.Width, snapshot.Height) * scale;
-            var center = (minimum + maximum) * 0.5f;
-            var uiScale = MathF.Max(0.5f, scale.Y);
-            var drawList = ImGui.GetForegroundDrawList(viewport);
-            if (snapshot.IsCircle)
-            {
-                drawList.AddCircle(
-                    center,
-                    (maximum.X - minimum.X) * 0.5f,
-                    BorderColor,
-                    64,
-                    1.5f * uiScale);
-            }
-            else
-            {
-                drawList.AddRect(
-                    minimum,
-                    maximum,
-                    BorderColor,
-                    2.0f * uiScale,
-                    1.5f * uiScale);
-            }
-
-            DrawPlayer(
-                drawList,
-                center,
-                snapshot.ForwardX,
-                snapshot.ForwardY,
-                uiScale);
-            if (snapshot.HasCameraDirection)
-            {
-                DrawCameraDirection(
-                    drawList,
-                    center,
-                    snapshot.CameraForwardX,
-                    snapshot.CameraForwardY,
-                    uiScale);
-            }
-        }
-        catch (Exception exception)
-        {
-            if (Interlocked.Exchange(ref _errorReported, 1) == 0)
-            {
-                Instance.Log($"Overlay rendering failed: {exception}", ModLogLevel.Error);
             }
         }
     }
@@ -1478,10 +1457,20 @@ public sealed class Minimap : ModBase
         _guiView.Visible = true;
         _guiView.HitVisible = false;
         _guiView.Interactive = false;
+        _guiWindow = FindNamedPlayObject(view, WindowName)?.TryAs<via.gui.Window>();
         _mapGroup = FindNamedPlayObject(view, GroupName)?.TryAs<via.gui.Panel>();
+        _overlayGroup = FindNamedPlayObject(view, OverlayGroupName)
+            ?.TryAs<via.gui.Panel>();
         _circleMask = FindNamedPlayObject(view, CircleMaskName)?.TryAs<via.gui.Circle>();
+        _circleBorder = FindNamedPlayObject(view, CircleBorderName)
+            ?.TryAs<via.gui.Circle>();
         _rectangleMask = FindNamedPlayObject(view, RectangleMaskName)
             ?.TryAs<via.gui.Texture>();
+        var borders = FindRects(view, BorderNamePrefix, 4);
+        var playerArrowOutlines = FindRects(view, PlayerArrowOutlinePrefix, 3);
+        var playerArrows = FindRects(view, PlayerArrowPrefix, PlayerFillPartCount);
+        var cameraArrowOutlines = FindRects(view, CameraArrowOutlinePrefix, 2);
+        var cameraArrows = FindRects(view, CameraArrowPrefix, 2);
         var slots = new via.gui.Texture[TileSlotCount];
         for (var index = 0; index < slots.Length; ++index)
         {
@@ -1489,19 +1478,39 @@ public sealed class Minimap : ModBase
                 ?.TryAs<via.gui.Texture>();
         }
 
-        if (!IsAlive(_mapGroup) || !IsAlive(_circleMask) ||
-            !IsAlive(_rectangleMask) || Array.Exists(slots, slot => !IsAlive(slot)))
+        if (!IsAlive(_guiWindow) || !IsAlive(_mapGroup) || !IsAlive(_overlayGroup) ||
+            !IsAlive(_circleMask) || !IsAlive(_circleBorder) ||
+            !IsAlive(_rectangleMask) ||
+            Array.Exists(borders, border => !IsAlive(border)) ||
+            Array.Exists(playerArrowOutlines, part => !IsAlive(part)) ||
+            Array.Exists(playerArrows, part => !IsAlive(part)) ||
+            Array.Exists(cameraArrowOutlines, part => !IsAlive(part)) ||
+            Array.Exists(cameraArrows, part => !IsAlive(part)) ||
+            Array.Exists(slots, slot => !IsAlive(slot)))
         {
             throw new InvalidOperationException(
                 "The Minimap GUI resource does not contain the expected named nodes.");
         }
 
         _tileSlots = slots;
+        _rectangleBorders = borders;
+        _playerArrowOutlines = playerArrowOutlines;
+        _playerArrows = playerArrows;
+        _cameraArrowOutlines = cameraArrowOutlines;
+        _cameraArrows = cameraArrows;
+        _guiWindow.ResolutionAdjust = false;
+        _guiWindow.SafeAreaAdjust = false;
         _mapGroup.Visible = false;
         _mapGroup.HitVisible = false;
         _mapGroup.Interactive = false;
         _mapGroup.MaskMode = via.gui.MaskMode.Keep;
         _mapGroup.Priority = MapDrawPriority;
+
+        _overlayGroup.Visible = false;
+        _overlayGroup.HitVisible = false;
+        _overlayGroup.Interactive = false;
+        _overlayGroup.MaskMode = via.gui.MaskMode.Disable;
+        _overlayGroup.Priority = OverlayDrawPriority;
 
         _circleMask.Visible = false;
         _circleMask.HitVisible = false;
@@ -1515,6 +1524,19 @@ public sealed class Minimap : ModBase
         _rectangleMask.ControlPoint = via.gui.ControlPoint.LeftTop;
         _rectangleMask.MaskType = via.gui.MaskType.Mask;
 
+        _circleBorder.Visible = false;
+        _circleBorder.HitVisible = false;
+        _circleBorder.ControlPoint = via.gui.ControlPoint.CenterCenter;
+        _circleBorder.MaskType = via.gui.MaskType.NonTarget;
+
+        foreach (var rectangle in EnumerateOverlayRectangles())
+        {
+            rectangle.Visible = false;
+            rectangle.HitVisible = false;
+            rectangle.ControlPoint = via.gui.ControlPoint.CenterCenter;
+            rectangle.MaskType = via.gui.MaskType.NonTarget;
+        }
+
         foreach (var slot in _tileSlots)
         {
             slot.Visible = false;
@@ -1523,6 +1545,50 @@ public sealed class Minimap : ModBase
             slot.UVType = via.gui.UVValueType.Rect;
             slot.ControlPoint = via.gui.ControlPoint.CenterCenter;
             slot.MaskType = via.gui.MaskType.Target;
+        }
+    }
+
+    private static via.gui.Rect[] FindRects(
+        via.gui.View view,
+        string namePrefix,
+        int count)
+    {
+        var rectangles = new via.gui.Rect[count];
+        for (var index = 0; index < rectangles.Length; ++index)
+        {
+            rectangles[index] = FindNamedPlayObject(
+                view,
+                $"{namePrefix}{index:00}")?.TryAs<via.gui.Rect>();
+        }
+
+        return rectangles;
+    }
+
+    private static IEnumerable<via.gui.Rect> EnumerateOverlayRectangles()
+    {
+        foreach (var rectangle in _rectangleBorders)
+        {
+            yield return rectangle;
+        }
+
+        foreach (var rectangle in _playerArrowOutlines)
+        {
+            yield return rectangle;
+        }
+
+        foreach (var rectangle in _playerArrows)
+        {
+            yield return rectangle;
+        }
+
+        foreach (var rectangle in _cameraArrowOutlines)
+        {
+            yield return rectangle;
+        }
+
+        foreach (var rectangle in _cameraArrows)
+        {
+            yield return rectangle;
         }
     }
 
@@ -1817,55 +1883,295 @@ public sealed class Minimap : ModBase
         return $"GUI/ui_texture/tex_map/tex_{name}_IMLM3.tex";
     }
 
-    private static void DrawPlayer(
-        ImDrawListPtr drawList,
-        Vector2 center,
-        float forwardX,
-        float forwardY,
-        float uiScale)
+    private static void UpdateNativeOverlay(
+        float left,
+        float top,
+        float width,
+        float height,
+        float playerForwardX,
+        float playerForwardY,
+        float cameraForwardX,
+        float cameraForwardY,
+        bool hasCameraDirection,
+        bool isCircle)
     {
-        var direction = new Vector2(forwardX, forwardY);
-        if (direction.LengthSquared() < 0.0001f)
+        var centerX = left + width * 0.5f;
+        var centerY = top + height * 0.5f;
+        var halfBorder = BorderThickness * 0.5f;
+
+        SetRect(
+            _rectangleBorders[0],
+            left + halfBorder,
+            centerY,
+            BorderThickness,
+            height,
+            !isCircle);
+        SetRect(
+            _rectangleBorders[1],
+            centerX,
+            top + halfBorder,
+            width,
+            BorderThickness,
+            !isCircle);
+        SetRect(
+            _rectangleBorders[2],
+            left + width - halfBorder,
+            centerY,
+            BorderThickness,
+            height,
+            !isCircle);
+        SetRect(
+            _rectangleBorders[3],
+            centerX,
+            top + height - halfBorder,
+            width,
+            BorderThickness,
+            !isCircle);
+
+        var circlePosition = _circleBorder.Position;
+        circlePosition.x = centerX;
+        circlePosition.y = centerY;
+        circlePosition.z = 0.0f;
+        _circleBorder.Position = circlePosition;
+        var circleSize = _circleBorder.Size;
+        circleSize.w = width;
+        circleSize.h = height;
+        _circleBorder.Size = circleSize;
+        _circleBorder.InnerRatio = Math.Clamp(
+            1.0f - 2.0f * BorderThickness / MathF.Min(width, height),
+            0.0f,
+            1.0f);
+        _circleBorder.Visible = isCircle;
+
+        NormalizeDirection(ref playerForwardX, ref playerForwardY, true);
+        var markerScale = Math.Clamp(
+            MathF.Min(width, height) / 280.0f,
+            0.35f,
+            1.0f);
+        UpdatePlayerArrow(
+            centerX,
+            centerY,
+            playerForwardX,
+            playerForwardY,
+            markerScale);
+
+        if (hasCameraDirection &&
+            NormalizeDirection(ref cameraForwardX, ref cameraForwardY, false))
         {
-            direction = new Vector2(0.0f, -1.0f);
+            UpdateCameraArrow(
+                centerX,
+                centerY,
+                cameraForwardX,
+                cameraForwardY,
+                markerScale);
         }
         else
         {
-            direction = Vector2.Normalize(direction);
+            SetVisible(_cameraArrowOutlines, false);
+            SetVisible(_cameraArrows, false);
         }
 
-        var right = new Vector2(-direction.Y, direction.X);
-        var tip = center + direction * (13.0f * uiScale);
-        var rear = center - direction * (8.0f * uiScale);
-        var left = rear + right * (7.0f * uiScale);
-        var rightPoint = rear - right * (7.0f * uiScale);
-        drawList.AddTriangle(tip, left, rightPoint, PlayerOutlineColor, 4.0f * uiScale);
-        drawList.AddTriangleFilled(tip, left, rightPoint, PlayerColor);
+        _overlayGroup.Visible = true;
     }
 
-    private static void DrawCameraDirection(
-        ImDrawListPtr drawList,
-        Vector2 center,
-        float forwardX,
-        float forwardY,
-        float uiScale)
+    private static void SetRect(
+        via.gui.Rect rectangle,
+        float centerX,
+        float centerY,
+        float width,
+        float height,
+        bool visible)
     {
-        var direction = new Vector2(forwardX, forwardY);
-        if (direction.LengthSquared() < 0.0001f)
+        var position = rectangle.Position;
+        position.x = centerX;
+        position.y = centerY;
+        position.z = 0.0f;
+        rectangle.Position = position;
+        var size = rectangle.Size;
+        size.w = width;
+        size.h = height;
+        rectangle.Size = size;
+        rectangle.Visible = visible;
+    }
+
+    private static void UpdatePlayerArrow(
+        float centerX,
+        float centerY,
+        float directionX,
+        float directionY,
+        float scale)
+    {
+        var rightX = -directionY;
+        var rightY = directionX;
+        var tipX = centerX + directionX * PlayerTipDistance * scale;
+        var tipY = centerY + directionY * PlayerTipDistance * scale;
+        var rearX = centerX - directionX * PlayerRearDistance * scale;
+        var rearY = centerY - directionY * PlayerRearDistance * scale;
+        var leftX = rearX + rightX * PlayerHalfWidth * scale;
+        var leftY = rearY + rightY * PlayerHalfWidth * scale;
+        var rightPointX = rearX - rightX * PlayerHalfWidth * scale;
+        var rightPointY = rearY - rightY * PlayerHalfWidth * scale;
+        SetFilledTriangle(
+            _playerArrows,
+            rearX,
+            rearY,
+            directionX,
+            directionY,
+            rightX,
+            rightY,
+            scale);
+        SetArrowTriangle(
+            _playerArrowOutlines,
+            tipX,
+            tipY,
+            leftX,
+            leftY,
+            rightPointX,
+            rightPointY,
+            PlayerOutlineThickness * scale);
+    }
+
+    private static void UpdateCameraArrow(
+        float centerX,
+        float centerY,
+        float directionX,
+        float directionY,
+        float scale)
+    {
+        var rightX = -directionY;
+        var rightY = directionX;
+        var tipX = centerX + directionX * CameraTipDistance * scale;
+        var tipY = centerY + directionY * CameraTipDistance * scale;
+        var rearX = centerX + directionX * CameraRearDistance * scale;
+        var rearY = centerY + directionY * CameraRearDistance * scale;
+        var leftX = rearX + rightX * CameraHalfWidth * scale;
+        var leftY = rearY + rightY * CameraHalfWidth * scale;
+        var rightPointX = rearX - rightX * CameraHalfWidth * scale;
+        var rightPointY = rearY - rightY * CameraHalfWidth * scale;
+        SetLine(
+            _cameraArrowOutlines[0],
+            tipX,
+            tipY,
+            leftX,
+            leftY,
+            CameraOutlineThickness * scale);
+        SetLine(
+            _cameraArrowOutlines[1],
+            tipX,
+            tipY,
+            rightPointX,
+            rightPointY,
+            CameraOutlineThickness * scale);
+        SetLine(
+            _cameraArrows[0],
+            tipX,
+            tipY,
+            leftX,
+            leftY,
+            CameraArrowThickness * scale);
+        SetLine(
+            _cameraArrows[1],
+            tipX,
+            tipY,
+            rightPointX,
+            rightPointY,
+            CameraArrowThickness * scale);
+    }
+
+    private static void SetArrowTriangle(
+        via.gui.Rect[] parts,
+        float tipX,
+        float tipY,
+        float leftX,
+        float leftY,
+        float rightX,
+        float rightY,
+        float thickness)
+    {
+        SetLine(parts[0], tipX, tipY, leftX, leftY, thickness);
+        SetLine(parts[1], tipX, tipY, rightX, rightY, thickness);
+        SetLine(parts[2], leftX, leftY, rightX, rightY, thickness);
+    }
+
+    private static void SetFilledTriangle(
+        via.gui.Rect[] parts,
+        float rearX,
+        float rearY,
+        float directionX,
+        float directionY,
+        float rightX,
+        float rightY,
+        float scale)
+    {
+        var length = PlayerTipDistance + PlayerRearDistance;
+        var partHeight = (length / parts.Length + PlayerFillOverlap) * scale;
+        for (var index = 0; index < parts.Length; ++index)
         {
-            return;
+            var centerRatio = (index + 0.5f) / parts.Length;
+            var halfWidth = PlayerHalfWidth *
+                (1.0f - (float)index / parts.Length) * scale;
+            var centerX = rearX + directionX * length * centerRatio * scale;
+            var centerY = rearY + directionY * length * centerRatio * scale;
+            SetLine(
+                parts[index],
+                centerX - rightX * halfWidth,
+                centerY - rightY * halfWidth,
+                centerX + rightX * halfWidth,
+                centerY + rightY * halfWidth,
+                partHeight);
+        }
+    }
+
+    private static void SetLine(
+        via.gui.Rect rectangle,
+        float startX,
+        float startY,
+        float endX,
+        float endY,
+        float thickness)
+    {
+        var deltaX = endX - startX;
+        var deltaY = endY - startY;
+        var position = rectangle.Position;
+        position.x = (startX + endX) * 0.5f;
+        position.y = (startY + endY) * 0.5f;
+        position.z = 0.0f;
+        rectangle.Position = position;
+        var size = rectangle.Size;
+        size.w = MathF.Sqrt(deltaX * deltaX + deltaY * deltaY);
+        size.h = thickness;
+        rectangle.Size = size;
+        var rotation = rectangle.Rotation;
+        rotation.z = MathF.Atan2(deltaY, deltaX) * (180.0f / MathF.PI);
+        rectangle.Rotation = rotation;
+        rectangle.Visible = true;
+    }
+
+    private static void SetVisible(via.gui.Rect[] rectangles, bool visible)
+    {
+        foreach (var rectangle in rectangles)
+        {
+            rectangle.Visible = visible;
+        }
+    }
+
+    private static bool NormalizeDirection(
+        ref float directionX,
+        ref float directionY,
+        bool useDefault)
+    {
+        var lengthSquared = directionX * directionX + directionY * directionY;
+        if (!float.IsFinite(lengthSquared) || lengthSquared < 0.0001f)
+        {
+            directionX = 0.0f;
+            directionY = -1.0f;
+            return useDefault;
         }
 
-        direction = Vector2.Normalize(direction);
-        var right = new Vector2(-direction.Y, direction.X);
-        var tip = center + direction * (34.0f * uiScale);
-        var rear = center + direction * (23.0f * uiScale);
-        var left = rear + right * (5.5f * uiScale);
-        var rightPoint = rear - right * (5.5f * uiScale);
-        drawList.AddLine(tip, left, CameraOutlineColor, 4.0f * uiScale);
-        drawList.AddLine(tip, rightPoint, CameraOutlineColor, 4.0f * uiScale);
-        drawList.AddLine(tip, left, CameraColor, 2.0f * uiScale);
-        drawList.AddLine(tip, rightPoint, CameraColor, 2.0f * uiScale);
+        var inverseLength = 1.0f / MathF.Sqrt(lengthSquared);
+        directionX *= inverseLength;
+        directionY *= inverseLength;
+        return true;
     }
 
     private static void HideMap()
@@ -1875,12 +2181,15 @@ public sealed class Minimap : ModBase
             _mapGroup.Visible = false;
         }
 
+        if (IsAlive(_overlayGroup))
+        {
+            _overlayGroup.Visible = false;
+        }
+
         if (IsAlive(_gui))
         {
             _gui.Enabled = false;
         }
-
-        Volatile.Write(ref _overlay, null);
     }
 
     private static void ResetMap()
@@ -1928,9 +2237,17 @@ public sealed class Minimap : ModBase
         }
 
         _tileSlots = Array.Empty<via.gui.Texture>();
+        _rectangleBorders = Array.Empty<via.gui.Rect>();
+        _cameraArrows = Array.Empty<via.gui.Rect>();
+        _cameraArrowOutlines = Array.Empty<via.gui.Rect>();
+        _playerArrows = Array.Empty<via.gui.Rect>();
+        _playerArrowOutlines = Array.Empty<via.gui.Rect>();
+        _circleBorder = null;
         _rectangleMask = null;
         _circleMask = null;
+        _overlayGroup = null;
         _mapGroup = null;
+        _guiWindow = null;
         _guiView = null;
         _gui = null;
         _guiGameObject = null;
@@ -2069,59 +2386,4 @@ public sealed class Minimap : ModBase
         public via.gui.Texture Texture { get; }
     }
 
-    private sealed class OverlaySnapshot
-    {
-        public OverlaySnapshot(
-            float left,
-            float top,
-            float width,
-            float height,
-            float virtualWidth,
-            float virtualHeight,
-            float presentLeft,
-            float presentTop,
-            float presentWidth,
-            float presentHeight,
-            float forwardX,
-            float forwardY,
-            float cameraForwardX,
-            float cameraForwardY,
-            bool hasCameraDirection,
-            bool isCircle)
-        {
-            Left = left;
-            Top = top;
-            Width = width;
-            Height = height;
-            VirtualWidth = virtualWidth;
-            VirtualHeight = virtualHeight;
-            PresentLeft = presentLeft;
-            PresentTop = presentTop;
-            PresentWidth = presentWidth;
-            PresentHeight = presentHeight;
-            ForwardX = forwardX;
-            ForwardY = forwardY;
-            CameraForwardX = cameraForwardX;
-            CameraForwardY = cameraForwardY;
-            HasCameraDirection = hasCameraDirection;
-            IsCircle = isCircle;
-        }
-
-        public float Left { get; }
-        public float Top { get; }
-        public float Width { get; }
-        public float Height { get; }
-        public float VirtualWidth { get; }
-        public float VirtualHeight { get; }
-        public float PresentLeft { get; }
-        public float PresentTop { get; }
-        public float PresentWidth { get; }
-        public float PresentHeight { get; }
-        public float ForwardX { get; }
-        public float ForwardY { get; }
-        public float CameraForwardX { get; }
-        public float CameraForwardY { get; }
-        public bool HasCameraDirection { get; }
-        public bool IsCircle { get; }
-    }
 }
