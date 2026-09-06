@@ -119,6 +119,8 @@ public sealed class ItemDescription : ModBase
     private static PendingUpdate _inventoryUpdate;
     [System.ThreadStatic]
     private static PendingUpdate _medicineBagUpdate;
+    [System.ThreadStatic]
+    private static PendingUpdate _medicineBagOverviewUpdate;
 
     private ItemDescription() : base("ItemDescription", "1.0")
     {
@@ -259,6 +261,7 @@ public sealed class ItemDescription : ModBase
         Instance._activeText.Clear();
         _inventoryUpdate = default;
         _medicineBagUpdate = default;
+        _medicineBagOverviewUpdate = default;
         Instance.ResetErrorReporting();
     }
 
@@ -334,6 +337,45 @@ public sealed class ItemDescription : ModBase
         {
             Instance.LogErrorOnce(
                 "Failed to update the medicine bag description",
+                exception);
+        }
+    }
+
+    [MethodHook(
+        typeof(app.GUI080200),
+        "updateSelectMedicineBagDisp",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeMedicineBagOverview(Span<ulong> args)
+    {
+        _medicineBagOverviewUpdate = CaptureDirectItem(args);
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.GUI080200),
+        "updateSelectMedicineBagDisp",
+        MethodHookType.Post)]
+    public static void AfterMedicineBagOverview(ref ulong returnValue)
+    {
+        var update = _medicineBagOverviewUpdate;
+        _medicineBagOverviewUpdate = default;
+
+        try
+        {
+            if (update.OwnerAddress == 0)
+            {
+                return;
+            }
+
+            var window = GetManagedObject<app.GUI080200>(
+                update.OwnerAddress);
+            ApplyDescription(window?._TextSelectEffect, update.ItemId);
+            Instance.ResetErrorReporting();
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to update the medicine bag overview description",
                 exception);
         }
     }
