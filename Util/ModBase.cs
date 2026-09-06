@@ -208,6 +208,21 @@ public abstract class ModBase
         ResetErrorReporting();
     }
 
+    protected static void DrawText(string text, bool disabled = false)
+    {
+        if (disabled)
+        {
+            Hexa.NET.ImGui.ImGui.TextDisabled(text);
+        }
+        else
+        {
+            Hexa.NET.ImGui.ImGui.TextWrapped(text);
+        }
+    }
+
+    protected bool DrawButton(string label, string id) =>
+        Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
+
     protected void DrawConfigUI()
     {
         if (_configDirty && !Hexa.NET.ImGui.ImGui.IsAnyItemActive())
@@ -228,7 +243,7 @@ public abstract class ModBase
                 _configEntries[index].Draw($"{ModName}.Config.{index}");
             }
 
-            if (Hexa.NET.ImGui.ImGui.Button($"reset settings##{ModName}.Config.Reset"))
+            if (DrawButton("reset settings", "Config.Reset"))
             {
                 foreach (var entry in _configEntries)
                 {
