@@ -1517,9 +1517,11 @@ public sealed class Minimap : ModBase
             ?.TryAs<via.gui.Texture>();
         var cameraArrows = FindRects(
             view, CameraArrowPrefix, CameraFillPartCount);
-        var wallMarkers = FindTextures(view, WallMarkerPrefix, WallMarkerCount);
-        var chestMarkers = FindTextures(view, ChestMarkerPrefix, ChestMarkerCount);
-        var footprintMarkers = FindTextures(
+        var wallMarkers = FindOptionalTextures(
+            view, WallMarkerPrefix, WallMarkerCount);
+        var chestMarkers = FindOptionalTextures(
+            view, ChestMarkerPrefix, ChestMarkerCount);
+        var footprintMarkers = FindOptionalTextures(
             view, FootprintMarkerPrefix, FootprintMarkerCount);
         var slots = new via.gui.Texture[TileSlotCount];
         for (var index = 0; index < slots.Length; ++index)
@@ -1532,11 +1534,7 @@ public sealed class Minimap : ModBase
             !IsAlive(_circleMask) || !IsAlive(_circleBorder) ||
             !IsAlive(_rectangleMask) ||
             Array.Exists(borders, border => !IsAlive(border)) ||
-            !IsAlive(playerMarker) ||
             Array.Exists(cameraArrows, part => !IsAlive(part)) ||
-            Array.Exists(wallMarkers, part => !IsAlive(part)) ||
-            Array.Exists(chestMarkers, part => !IsAlive(part)) ||
-            Array.Exists(footprintMarkers, part => !IsAlive(part)) ||
             Array.Exists(slots, slot => !IsAlive(slot)))
         {
             throw new InvalidOperationException(
@@ -1589,7 +1587,11 @@ public sealed class Minimap : ModBase
             rectangle.MaskType = via.gui.MaskType.NonTarget;
         }
 
-        ConfigureMarkerTexture(_playerMarker);
+        if (IsAlive(_playerMarker))
+        {
+            ConfigureMarkerTexture(_playerMarker);
+        }
+
         foreach (var textures in new[]
                  {
                      _wallMarkers,
@@ -1602,6 +1604,12 @@ public sealed class Minimap : ModBase
                 ConfigureMarkerTexture(texture);
             }
         }
+
+        Instance.Log(
+            $"Native marker nodes: player={(IsAlive(_playerMarker) ? 1 : 0)}/1, " +
+            $"walls={_wallMarkers.Length}/{WallMarkerCount}, " +
+            $"chests={_chestMarkers.Length}/{ChestMarkerCount}, " +
+            $"footprints={_footprintMarkers.Length}/{FootprintMarkerCount}.");
 
         foreach (var slot in _tileSlots)
         {
@@ -1639,22 +1647,23 @@ public sealed class Minimap : ModBase
         return rectangles;
     }
 
-    private static via.gui.Texture[] FindTextures(
+    private static via.gui.Texture[] FindOptionalTextures(
         via.gui.View view,
         string namePrefix,
         int count)
     {
-        var textures = new via.gui.Texture[count];
-        for (var index = 0; index < textures.Length; ++index)
+        var textures = new List<via.gui.Texture>(count);
+        for (var index = 0; index < count; ++index)
         {
             var name = $"{namePrefix}{index:00}";
-            textures[index] = FindNamedPlayObject(view, name)
-                ?.TryAs<via.gui.Texture>()
-                ?? throw new InvalidOperationException(
-                    $"The Minimap GUI resource is missing {name}.");
+            var texture = FindNamedPlayObject(view, name)?.TryAs<via.gui.Texture>();
+            if (IsAlive(texture))
+            {
+                textures.Add(texture);
+            }
         }
 
-        return textures;
+        return textures.ToArray();
     }
 
     private static IEnumerable<via.gui.Rect> EnumerateOverlayRectangles()
@@ -2515,6 +2524,11 @@ public sealed class Minimap : ModBase
         float directionY,
         float scale)
     {
+        if (!IsAlive(_playerMarker))
+        {
+            return;
+        }
+
         var rotationDegrees =
             MathF.Atan2(directionY, directionX) * (180.0f / MathF.PI) + 90.0f;
         var markerSize = PlayerMarkerSize * scale;
