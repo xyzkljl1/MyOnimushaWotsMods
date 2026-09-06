@@ -107,6 +107,7 @@ public sealed class ItemDescription : ModBase
         DetailCache = new();
 
     private readonly string _localizationDirectory;
+    private via.Language _messageLanguage = via.Language.English;
     private readonly System.Collections.Generic.Dictionary<string, string>
         _gameMessageNames = new(System.StringComparer.Ordinal);
     private readonly System.Collections.Generic.Dictionary<string, string>
@@ -151,29 +152,44 @@ public sealed class ItemDescription : ModBase
             false);
         _activeText.Clear();
         var language = GetCurrentLanguage();
-        if (!string.IsNullOrWhiteSpace(language) &&
-            language.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) < 0)
+        var fallbackLanguage = language == via.Language.TransitionalChinese
+            ? via.Language.SimplelifiedChinese
+            : via.Language.English;
+        _messageLanguage = language is { } currentLanguage &&
+                           HasLanguage(currentLanguage)
+            ? currentLanguage
+            : fallbackLanguage;
+        LoadLanguage(fallbackLanguage);
+        if (_messageLanguage != fallbackLanguage)
         {
-            var languagesDirectory = System.IO.Path.Combine(
-                _localizationDirectory,
-                "Languages");
-            LoadDictionary(
-                System.IO.Path.Combine(
-                    languagesDirectory,
-                    $"{language}.default.json"),
-                _activeText,
-                false);
-            LoadDictionary(
-                System.IO.Path.Combine(
-                    languagesDirectory,
-                    $"{language}.user.json"),
-                _activeText,
-                false);
+            LoadLanguage(_messageLanguage);
         }
 
         _resolvedText.Clear();
         DetailCache.Clear();
     }
+
+    private void LoadLanguage(via.Language language)
+    {
+        LoadDictionary(
+            LanguagePath(language, "default"),
+            _activeText,
+            false);
+        LoadDictionary(
+            LanguagePath(language, "user"),
+            _activeText,
+            false);
+    }
+
+    private bool HasLanguage(via.Language language) =>
+        System.IO.File.Exists(LanguagePath(language, "default")) ||
+        System.IO.File.Exists(LanguagePath(language, "user"));
+
+    private string LanguagePath(via.Language language, string variant) =>
+        System.IO.Path.Combine(
+            _localizationDirectory,
+            "Languages",
+            $"{language}.{variant}.json");
 
     private void LoadDictionary(
         string path,
@@ -215,11 +231,11 @@ public sealed class ItemDescription : ModBase
         }
     }
 
-    private static string GetCurrentLanguage()
+    private static via.Language? GetCurrentLanguage()
     {
         try
         {
-            return via.gui.GUISystem.MessageLanguage.ToString();
+            return via.gui.GUISystem.MessageLanguage;
         }
         catch
         {
@@ -400,7 +416,9 @@ public sealed class ItemDescription : ModBase
             try
             {
                 var guid = via.gui.message.getGuidByName(messageName);
-                var gameText = via.gui.message.get(guid)?.Trim();
+                var gameText = via.gui.message.get(
+                    guid,
+                    _messageLanguage)?.Trim();
                 if (!string.IsNullOrWhiteSpace(gameText))
                 {
                     resolved = gameText;
