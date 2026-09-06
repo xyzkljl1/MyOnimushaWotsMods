@@ -783,7 +783,7 @@ public sealed class AutoLoot : ModBase
             return false;
         }
 
-        _itemMasterData ??= API.GetManagedSingletonT<app.ItemMasterData>();
+        _itemMasterData ??= app.GA.VariousData?.ItemData;
         var categoryValue = _itemMasterData
             ?.getDataByFixedId(fixedId)
             ?._Category
