@@ -14,7 +14,7 @@
   "Item.-749388992": "{ParamTarget.HEALTH} {@1:signed}%",
   "Item.-522056192": "{@1:duration} {ParamTarget.HEALTH} {@1:signed}%{@1:cadence}",
   "Item.-228832000": "{@1:duration} {ParamTarget.HEALTH} {@1:signed}%{@1:cadence}\n{ParamTarget.ONI_ENERGY} {@2:signed}{@2:cadence}",
-  "Item.1593": "{@1:duration} {Action.Issen}/{Action.Parry}判定延長",
+  "Item.1593": "{@1:duration}，{Action.Issen}/{Action.ChainIssen}/{Action.Parry}/{Action.Deflect}\n{Action.ReflexDodge}/{Action.CounterGrab}判定窗口+3幀",
   "Item.6891": "{ParamTarget.SOUL_LOOTBOX_AMOUNT} {@1:signed}",
   "Item.7434": "{@1:duration} {BuffTarget.HP_DAMAGE_CUT} {@1:reduction}\n受{ParamTarget.RIKIDO}傷害 -{@2:reduction}",
   "Item.11032": "{@1:duration} {ParamTarget.ONI_CHANGE_ENERGY} {@1:signed}%{@1:cadence}",

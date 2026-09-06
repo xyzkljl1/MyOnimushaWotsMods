@@ -14,7 +14,7 @@
   "Item.-749388992": "{ParamTarget.HEALTH} {@1:signed}%",
   "Item.-522056192": "{ParamTarget.HEALTH} {@1:signed}%{@1:cadence} {@1:duration}",
   "Item.-228832000": "{ParamTarget.HEALTH} {@1:signed}%{@1:cadence} {@1:duration}\n{ParamTarget.ONI_ENERGY} {@2:signed}{@2:cadence} {@2:duration}",
-  "Item.1593": "{Action.Issen}/{Action.Parry} window extended {@1:duration}",
+  "Item.1593": "{Action.Issen}/{Action.ChainIssen}/{Action.Parry}/{Action.Deflect}\n{Action.ReflexDodge}/{Action.CounterGrab} windows +3 frames for {@1:duration}",
   "Item.6891": "{ParamTarget.SOUL_LOOTBOX_AMOUNT} {@1:signed}",
   "Item.7434": "{BuffTarget.HP_DAMAGE_CUT} {@1:reduction} {@1:duration}\n{ParamTarget.RIKIDO} damage taken -{@2:reduction} {@2:duration}",
   "Item.11032": "{ParamTarget.ONI_CHANGE_ENERGY} {@1:signed}%{@1:cadence} {@1:duration}",
