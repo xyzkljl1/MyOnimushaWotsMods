@@ -567,43 +567,46 @@ public sealed class FasterInteract : ModBase
         OriginalPlayerLayerSpeeds = new();
     private static readonly System.Collections.Generic.Dictionary<ulong, float>
         OriginalDoorLayerSpeeds = new();
+    private static readonly System.Collections.Generic.Dictionary<ulong, float>
+        LastElevatorPositions = new();
     [ThreadStatic]
     private static ulong _enteringPlayerAction;
+    [ThreadStatic]
+    private static ulong _updatingElevator;
+    [ThreadStatic]
+    private static float _originalElevatorMoveSpeed;
     private static ulong _modifiedAction;
     private static ulong _acceleratedDoor;
     private static InteractionFeature _activeFeature;
     private static bool _originalOverrideEnabled;
     private static float _originalOverrideSpeed;
 
+    private readonly ModConfig<float> _interactionSpeed;
     private readonly ModConfig<bool> _oniWallEnabled;
-    private readonly ModConfig<float> _oniWallSpeed;
     private readonly ModConfig<bool> _doorEnabled;
-    private readonly ModConfig<float> _doorSpeed;
+    private readonly ModConfig<bool> _elevatorDescentEnabled;
 
     private FasterInteract() : base("FasterInteract", "1.0")
     {
+        _interactionSpeed = AddFloatConfig(
+            "Interaction speed",
+            3.0f,
+            1.0f,
+            10.0f,
+            "%.1fx",
+            key: "InteractionSpeed");
         _oniWallEnabled = AddBoolConfig(
             "Enable Oni wall acceleration",
             true,
             key: "OniWallEnabled");
-        _oniWallSpeed = AddFloatConfig(
-            "Oni wall interaction speed",
-            3.0f,
-            1.0f,
-            10.0f,
-            "%.1fx",
-            key: "OniWallSpeed");
         _doorEnabled = AddBoolConfig(
             "Enable door acceleration",
             true,
             key: "DoorEnabled");
-        _doorSpeed = AddFloatConfig(
-            "Door interaction speed",
-            3.0f,
-            1.0f,
-            10.0f,
-            "%.1fx",
-            key: "DoorSpeed");
+        _elevatorDescentEnabled = AddBoolConfig(
+            "Enable elevator descent acceleration",
+            true,
+            key: "ElevatorDescentEnabled");
     }
 
     [PluginEntryPoint]
@@ -617,8 +620,37 @@ public sealed class FasterInteract : ModBase
     {
         RestoreActiveInteraction();
         RestoreDoorLayerSpeeds();
+        LastElevatorPositions.Clear();
         _enteringPlayerAction = 0;
+        _updatingElevator = 0;
         Instance.UnloadMod();
+    }
+
+    [Callback(typeof(UpdateBehavior), CallbackType.Post)]
+    public static void OnUpdate()
+    {
+        if (_modifiedAction == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var character = API.GetManagedSingletonT<app.PlayerManager>()
+                ?.getControllingPlayerInfo()?.Character;
+            var baseAction = (character?.BaseCurrentAction as IProxyable)
+                ?.GetAddress() ?? 0;
+            var subAction = (character?.SubCurrentAction as IProxyable)
+                ?.GetAddress() ?? 0;
+            if (_modifiedAction != baseAction && _modifiedAction != subAction)
+            {
+                RestoreActiveInteraction();
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce("Failed to monitor interaction exit", exception);
+        }
     }
 
     [MethodHook(
@@ -658,6 +690,79 @@ public sealed class FasterInteract : ModBase
         }
 
         return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.GimmickElevator),
+        "updateMoveState",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeElevatorMoveUpdate(Span<ulong> args)
+    {
+        _updatingElevator = 0;
+        try
+        {
+            if (!Instance._elevatorDescentEnabled.Value || args.Length <= 1)
+            {
+                return PreHookResult.Continue;
+            }
+
+            var elevator = GetManagedObject<app.GimmickElevator>(args[1]);
+            var transform = elevator?.GameObject?.Transform;
+            if (elevator is null ||
+                transform is null ||
+                elevator.MoveState != app.GimmickElevator.MOVE_STATE.MOVE)
+            {
+                return PreHookResult.Continue;
+            }
+
+            var address = args[1];
+            var positionY = transform.Position.y;
+            var isDescending = LastElevatorPositions.TryGetValue(
+                address,
+                out var previousY) &&
+                positionY < previousY - 0.0001f;
+            LastElevatorPositions[address] = positionY;
+            if (isDescending)
+            {
+                _updatingElevator = address;
+                _originalElevatorMoveSpeed = elevator._MoveSpeed;
+                elevator._MoveSpeed =
+                    _originalElevatorMoveSpeed * GetInteractionSpeed();
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce("Failed to accelerate elevator descent", exception);
+        }
+
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.GimmickElevator),
+        "updateMoveState",
+        MethodHookType.Post)]
+    public static void AfterElevatorMoveUpdate(ref ulong returnValue)
+    {
+        var elevatorAddress = _updatingElevator;
+        _updatingElevator = 0;
+        if (elevatorAddress == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var elevator = GetManagedObject<app.GimmickElevator>(elevatorAddress);
+            if (elevator is not null)
+            {
+                elevator._MoveSpeed = _originalElevatorMoveSpeed;
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce("Failed to restore elevator speed", exception);
+        }
     }
 
     [MethodHook(
@@ -772,7 +877,7 @@ public sealed class FasterInteract : ModBase
             }
         }
 
-        var speed = GetInteractionSpeed(feature);
+        var speed = GetInteractionSpeed();
         action._UseOverrideMotionSpeed = true;
         action._OverrideMotionSpeed = speed;
         if (applyMotionLayers)
@@ -817,12 +922,8 @@ public sealed class FasterInteract : ModBase
             : InteractionFeature.None;
     }
 
-    private static float GetInteractionSpeed(InteractionFeature feature) =>
-        MathF.Max(
-            1.0f,
-            feature == InteractionFeature.Door
-                ? Instance._doorSpeed.Value
-                : Instance._oniWallSpeed.Value);
+    private static float GetInteractionSpeed() =>
+        MathF.Max(1.0f, Instance._interactionSpeed.Value);
 
     private static bool IsFeatureEnabled(InteractionFeature feature) =>
         feature switch
@@ -856,9 +957,7 @@ public sealed class FasterInteract : ModBase
             return address;
         }
 
-        var methodGimmick = (actionObject as IObject)
-            ?.Call("getGimmick") as ManagedObject;
-        return (methodGimmick as IProxyable)?.GetAddress() ?? 0;
+        return 0;
     }
 
     private static void ApplyPlayerLayerSpeeds(float multiplier)
@@ -945,7 +1044,7 @@ public sealed class FasterInteract : ModBase
             return;
         }
 
-        ApplyDoorLayerSpeeds(doorAddress, GetInteractionSpeed(InteractionFeature.Door));
+        ApplyDoorLayerSpeeds(doorAddress, GetInteractionSpeed());
     }
 
     private static void ApplyDoorLayerSpeeds(
