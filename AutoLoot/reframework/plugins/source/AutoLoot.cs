@@ -410,7 +410,9 @@ public sealed class AutoLoot : ModBase
     private static readonly ConcurrentQueue<ulong> PendingItems = new();
     private static readonly HashSet<ulong> ProcessingItems = new();
     private static readonly Dictionary<ulong, float> LastAttempts = new();
+    private static readonly Dictionary<int, bool> AutoLootableItemIds = new();
     private static app.GameFlowManager _gameFlowManager;
+    private static app.ItemMasterData _itemMasterData;
     private static app.PlayerManager _playerManager;
 
     [ThreadStatic] private static ulong _checkingBaseItem;
@@ -576,6 +578,8 @@ public sealed class AutoLoot : ModBase
         PendingItems.Clear();
         ProcessingItems.Clear();
         LastAttempts.Clear();
+        AutoLootableItemIds.Clear();
+        _itemMasterData = null;
         Instance.UnloadMod();
     }
 
@@ -619,7 +623,9 @@ public sealed class AutoLoot : ModBase
             !IsWithinDistance(
                 playerPosition,
                 itemTransform.Position,
-                collectionDistanceSquared))
+                collectionDistanceSquared) ||
+            LastAttempts.TryGetValue(address, out var attemptedAt) &&
+            now - attemptedAt < RetryDelaySeconds)
         {
             return;
         }
@@ -652,13 +658,21 @@ public sealed class AutoLoot : ModBase
             }
         }
 
-        if (!IsCategoryEnabled(isTreasureBox, isSeniorChest) ||
-            !item.onGmInteract_CheckOpenPopIcon() ||
+        if (!IsCategoryEnabled(isTreasureBox, isSeniorChest))
+        {
+            return;
+        }
+
+        if (!HasOnlyAutoLootableItems(item))
+        {
+            LastAttempts[address] = now;
+            return;
+        }
+
+        if (!item.onGmInteract_CheckOpenPopIcon() ||
             treasureBox is not null &&
             (treasureBox.State != app.GimmickTreasureBox.STATE.IDLE ||
-             !isDialogueChest && !treasureBox.checkEnableGetIAlltem()) ||
-            LastAttempts.TryGetValue(address, out var attemptedAt) &&
-            now - attemptedAt < RetryDelaySeconds)
+             !isDialogueChest && !treasureBox.checkEnableGetIAlltem()))
         {
             return;
         }
@@ -695,6 +709,90 @@ public sealed class AutoLoot : ModBase
         var resolvedDialogueId = default(app.DialogueDef.ID);
         return dialogueId is not null &&
             dialogueId.tryGetEnum(ref resolvedDialogueId);
+    }
+
+    private static bool HasOnlyAutoLootableItems(app.Gm002 gimmick)
+    {
+        var uniqueProxy = gimmick
+            ?._ContextHolder
+            ?.Gimmick
+            ?.Unique as IProxyable;
+        var uniqueAddress = uniqueProxy?.GetAddress() ?? 0;
+        var unique = uniqueAddress != 0 && ManagedObject.IsManagedObject(uniqueAddress)
+            ? ManagedObject
+                .ToManagedObject(uniqueAddress)
+                .As<app.cGm002ContextParamUnique>()
+            : null;
+        var itemDataList = unique?._ItemDataList;
+        if (itemDataList is null || itemDataList.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var itemData in itemDataList)
+        {
+            var fixedId = itemData?._ItemID?.Value;
+            if (fixedId is not int value)
+            {
+                return false;
+            }
+
+            if (!IsAutoLootableItemId(value))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsAutoLootableItemId(int fixedId)
+    {
+        if (AutoLootableItemIds.TryGetValue(fixedId, out var autoLootable))
+        {
+            return autoLootable;
+        }
+
+        var itemId = (app.ItemEnum.ID_Fixed)fixedId;
+        if (itemId == app.ItemEnum.ID_Fixed.INVALID ||
+            !Enum.IsDefined(typeof(app.ItemEnum.ID_Fixed), itemId))
+        {
+            AutoLootableItemIds[fixedId] = false;
+            return false;
+        }
+
+        _itemMasterData ??= API.GetManagedSingletonT<app.ItemMasterData>();
+        var categoryValue = _itemMasterData
+            ?.getDataByFixedId(fixedId)
+            ?._Category
+            ?.Value;
+        if (categoryValue is not int category)
+        {
+            return false;
+        }
+
+        var itemClass = GetItemClass(itemId.ToString());
+        autoLootable =
+            !itemClass.Equals("INVALID", StringComparison.OrdinalIgnoreCase) &&
+            category != unchecked((int)app.ItemEnum.CATEGORY_Fixed.INVALID) &&
+            (itemClass.EndsWith("SKIN", StringComparison.OrdinalIgnoreCase) ||
+             category == unchecked((int)app.ItemEnum.CATEGORY_Fixed.EQUIPABLE) ||
+             category == unchecked((int)app.ItemEnum.CATEGORY_Fixed.GROWTH_MATERIAL) ||
+             category == unchecked((int)app.ItemEnum.CATEGORY_Fixed.TRIBUTE) ||
+             category == unchecked((int)app.ItemEnum.CATEGORY_Fixed.MEDICINE_BAG_MATERIAL));
+        AutoLootableItemIds[fixedId] = autoLootable;
+        return autoLootable;
+    }
+
+    private static string GetItemClass(string itemId)
+    {
+        if (itemId.StartsWith("DLC_", StringComparison.OrdinalIgnoreCase))
+        {
+            itemId = itemId.Substring(4);
+        }
+
+        var separator = itemId.IndexOf('_');
+        return separator < 0 ? itemId : itemId.Substring(0, separator);
     }
 
     private bool IsCategoryEnabled(bool isTreasureBox, bool isSeniorChest)
