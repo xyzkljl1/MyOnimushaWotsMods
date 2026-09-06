@@ -1,0 +1,23 @@
+{
+  "PickupPrefix": "拾取：",
+  "UnknownBuff": "未知buff",
+  "Duration": "时效 {seconds}秒",
+  "Value": "{target} {value}{duration}",
+  "Regeneration": "{target} {value}{cadence}{duration}",
+  "DamageUp": "{target}伤害 +{value}{duration}",
+  "EffectReduction": "{target} {value}{duration}",
+  "ParamType.MEDICINE_BAG_USE_COUNT": "{target}次数 {value}",
+  "BuffType.RIKIDO_DAMAGE_CUT": "受{ParamTarget.RIKIDO}伤害 -{value}{duration}",
+  "BuffType.RIKIDO_DAMAGE_DISABLE": "{ParamTarget.RIKIDO}不减{duration}",
+  "BuffType.SOUL_GENERATE_ATTACK": "命中时释放灵魂{duration}",
+  "BuffType.ALWAYS_JUST_ACTION": "{Action.Issen}/{Action.Parry}判定延长{duration}",
+  "BuffType.ALL_IMMUNE": "燃烧/沾油无效{duration}",
+  "PerSecond": "/秒",
+  "PerSeconds": "/{seconds}秒",
+  "DurationSuffix": " {seconds}秒",
+  "ParamTarget.HEALTH": "体力",
+  "ParamTarget.RIKIDO": "力动",
+  "ParamTarget.SOUL_LOOTBOX_AMOUNT": "灵魂",
+  "BuffTarget.HP_DAMAGE_UP": "{ParamTarget.HEALTH}",
+  "BuffTarget.RIKIDO_DAMAGE_UP": "{ParamTarget.RIKIDO}"
+}

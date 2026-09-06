@@ -1,0 +1,23 @@
+{
+  "PickupPrefix": "On pickup: ",
+  "UnknownBuff": "Unknown buff",
+  "Duration": "Duration {seconds}s",
+  "Value": "{target} {value}{duration}",
+  "Regeneration": "{target} {value}{cadence}{duration}",
+  "DamageUp": "{target} damage +{value}{duration}",
+  "EffectReduction": "{target} -{value}{duration}",
+  "ParamType.MEDICINE_BAG_USE_COUNT": "{target} uses {value}",
+  "BuffType.RIKIDO_DAMAGE_CUT": "{ParamTarget.RIKIDO} damage taken -{value}{duration}",
+  "BuffType.RIKIDO_DAMAGE_DISABLE": "{ParamTarget.RIKIDO} does not decrease{duration}",
+  "BuffType.SOUL_GENERATE_ATTACK": "Attacks release souls on hit{duration}",
+  "BuffType.ALWAYS_JUST_ACTION": "{Action.Issen}/{Action.Parry} window extended{duration}",
+  "BuffType.ALL_IMMUNE": "Burn/Oil immunity{duration}",
+  "PerSecond": "/s",
+  "PerSeconds": "/{seconds}s",
+  "DurationSuffix": " {seconds}s",
+  "ParamTarget.HEALTH": "Health",
+  "ParamTarget.RIKIDO": "Stamina",
+  "ParamTarget.SOUL_LOOTBOX_AMOUNT": "Souls",
+  "BuffTarget.HP_DAMAGE_UP": "{ParamTarget.HEALTH}",
+  "BuffTarget.RIKIDO_DAMAGE_UP": "{ParamTarget.RIKIDO}"
+}
