@@ -2,7 +2,7 @@ using System;
 using REFrameworkNET;
 using REFrameworkNET.Attributes;
 using REFrameworkNET.Callbacks;
-using ParamValueType = app.user_data.ItemAdditionalParam.cGeneralParam.VALUE_TYPE;
+using EffectType = app.user_data.ItemAdditionalParam.cGeneralParam.EFFECT_TYPE;
 
 // BEGIN copied source: Util/ModBase.cs
 // Source blob SHA-1: 25417359db8c70a84c6f557d62440b857d2d6419
@@ -111,7 +111,8 @@ public sealed class ItemDescription : ModBase
         _gameMessageNames = new(System.StringComparer.Ordinal);
     private readonly System.Collections.Generic.Dictionary<string, string>
         _resolvedText = new(System.StringComparer.Ordinal);
-    private System.Collections.Generic.Dictionary<string, string> _activeText;
+    private readonly System.Collections.Generic.Dictionary<string, string>
+        _activeText = new(System.StringComparer.Ordinal);
 
     [System.ThreadStatic]
     private static PendingUpdate _inventoryUpdate;
@@ -120,39 +121,17 @@ public sealed class ItemDescription : ModBase
 
     private ItemDescription() : base("ItemDescription", "1.0")
     {
-        _localizationDirectory = GetLocalizationDirectory();
-    }
-
-    private static string GetLocalizationDirectory()
-    {
-        var pluginPath = API.GetPluginDirectory(typeof(ItemDescription).Assembly);
-        var directory = new System.IO.DirectoryInfo(
-            pluginPath ?? System.Environment.CurrentDirectory);
-        while (directory is not null &&
-               !string.Equals(
-                   directory.Name,
-                   "reframework",
-                   StringComparison.OrdinalIgnoreCase))
-        {
-            directory = directory.Parent;
-        }
-
-        var reframeworkPath = directory?.FullName ??
-                              System.IO.Path.Combine(
-                                  System.Environment.CurrentDirectory,
-                                  "reframework");
-        return System.IO.Path.Combine(
-            reframeworkPath,
-            "plugins",
-            "source",
+        var sourceDirectory =
+            API.GetPluginDirectory(typeof(ItemDescription).Assembly) ??
+            System.IO.Path.Combine(
+                System.Environment.CurrentDirectory,
+                "reframework",
+                "plugins",
+                "source");
+        _localizationDirectory = System.IO.Path.Combine(
+            sourceDirectory,
             "ItemDescription",
             "Localization");
-    }
-
-    private void Initialize()
-    {
-        LoadLocalization();
-        Log($"Loaded. Localization: {_localizationDirectory}");
     }
 
     private void LoadLocalization()
@@ -170,7 +149,7 @@ public sealed class ItemDescription : ModBase
                 "GameMessageNames.user.json"),
             _gameMessageNames,
             false);
-        _activeText = new(System.StringComparer.Ordinal);
+        _activeText.Clear();
         var language = GetCurrentLanguage();
         if (!string.IsNullOrWhiteSpace(language) &&
             language.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) < 0)
@@ -249,7 +228,11 @@ public sealed class ItemDescription : ModBase
     }
 
     [PluginEntryPoint]
-    public static void Main() => Instance.Initialize();
+    public static void Main()
+    {
+        Instance.LoadLocalization();
+        Instance.Log($"Loaded. Localization: {Instance._localizationDirectory}");
+    }
 
     [PluginExitPoint]
     public static void OnUnload()
@@ -257,7 +240,7 @@ public sealed class ItemDescription : ModBase
         DetailCache.Clear();
         Instance._gameMessageNames.Clear();
         Instance._resolvedText.Clear();
-        Instance._activeText = null;
+        Instance._activeText.Clear();
         _inventoryUpdate = default;
         _medicineBagUpdate = default;
         Instance.ResetErrorReporting();
@@ -284,7 +267,7 @@ public sealed class ItemDescription : ModBase
 
         try
         {
-            if (!update.IsValid)
+            if (update.OwnerAddress == 0)
             {
                 return;
             }
@@ -321,7 +304,7 @@ public sealed class ItemDescription : ModBase
 
         try
         {
-            if (!update.IsValid)
+            if (update.OwnerAddress == 0)
             {
                 return;
             }
@@ -348,8 +331,7 @@ public sealed class ItemDescription : ModBase
 
         return new PendingUpdate(
             args[1],
-            unchecked((int)args[2]),
-            true);
+            unchecked((int)args[2]));
     }
 
     private static int ResolveMedicineBagId(
@@ -435,8 +417,7 @@ public sealed class ItemDescription : ModBase
 
         if (resolved is null)
         {
-            resolved = _activeText is not null &&
-                       _activeText.TryGetValue(key, out var text)
+            resolved = _activeText.TryGetValue(key, out var text)
                 ? text ?? string.Empty
                 : string.Empty;
         }
@@ -455,7 +436,7 @@ public sealed class ItemDescription : ModBase
             {
                 var key = match.Groups[1].Value;
                 return _gameMessageNames.ContainsKey(key) ||
-                       _activeText?.ContainsKey(key) == true
+                       _activeText.ContainsKey(key)
                     ? GetText(key)
                     : match.Value;
             });
@@ -563,6 +544,11 @@ public sealed class ItemDescription : ModBase
                 continue;
             }
 
+            var duration = effect._EffectType is
+                EffectType.REGENERATION or EffectType.BUFF
+                    ? effect._EffectSec
+                    : 0.0f;
+
             if (effect._ParamTargets is { } parameters)
             {
                 foreach (var parameter in parameters)
@@ -574,8 +560,7 @@ public sealed class ItemDescription : ModBase
 
                     values.Add(new DynamicValue(
                         parameter._ParamValue,
-                        parameter._ValueType,
-                        effect._EffectSec,
+                        duration,
                         effect._RegenerationIntervalSec));
                 }
             }
@@ -591,8 +576,7 @@ public sealed class ItemDescription : ModBase
 
                     values.Add(new DynamicValue(
                         buff._ParamValue,
-                        ParamValueType.CONSTANT,
-                        effect._EffectSec,
+                        duration,
                         effect._RegenerationIntervalSec));
                 }
             }
@@ -608,11 +592,7 @@ public sealed class ItemDescription : ModBase
         var culture = System.Globalization.CultureInfo.InvariantCulture;
         return format switch
         {
-            "number" => value.Value.ToString(number, culture),
             "signed" => value.Value.ToString(signed, culture),
-            "typed" => value.ValueType == ParamValueType.PERCENT
-                ? $"{value.Value.ToString(signed, culture)}%"
-                : value.Value.ToString(signed, culture),
             "percent" => $"{(value.Value * 100.0f).ToString(number, culture)}%",
             "increase" =>
                 $"{((value.Value - 1.0f) * 100.0f).ToString(number, culture)}%",
@@ -637,12 +617,10 @@ public sealed class ItemDescription : ModBase
 
     private readonly record struct DynamicValue(
         float Value,
-        ParamValueType ValueType,
         float Duration,
         float Interval);
 
     private readonly record struct PendingUpdate(
         ulong OwnerAddress,
-        int ItemId,
-        bool IsValid);
+        int ItemId);
 }
