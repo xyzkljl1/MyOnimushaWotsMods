@@ -53,6 +53,7 @@ public sealed class RedBar : ModBase
     private const float HealthGreenScale = 0.23f;
     private const float HealthBlueScale = 0.38f;
     private const float StaminaGreenScale = 3.20f;
+    private const int MaxEnemyGaugeCount = 64;
 
     private static readonly RedBar Instance = new();
 
@@ -63,10 +64,11 @@ public sealed class RedBar : ModBase
     private static via.Float4 _staminaColor;
     private static via.Float3 _zeroOffset;
     private static int _loadedLogged;
-    private static int _errorReported;
+    private static int _disabled;
+    private static int _runtimeErrorReported;
 
     private RedBar()
-        : base("Red Bar", "1.0")
+        : base("Red Bar", "1.1")
     {
     }
 
@@ -76,11 +78,11 @@ public sealed class RedBar : ModBase
         if (!CreateColorBuffers())
         {
             Instance.Log("Could not create color buffers.", ModLogLevel.Error);
-            Interlocked.Exchange(ref _errorReported, 1);
+            Interlocked.Exchange(ref _disabled, 1);
             return;
         }
 
-        Instance.Log("Loaded. Health will be red and stamina will be green.");
+        Instance.Log("Loaded. Player and enemy health will be red; stamina will be green.");
     }
 
     [PluginExitPoint]
@@ -93,37 +95,39 @@ public sealed class RedBar : ModBase
         _staminaColorStorage = null;
         _zeroOffsetStorage = null;
         _loadedLogged = 0;
-        _errorReported = 0;
+        _disabled = 0;
+        _runtimeErrorReported = 0;
     }
 
     [Callback(typeof(UpdateBehavior), CallbackType.Post)]
     public static void OnUpdate()
     {
-        if (Volatile.Read(ref _errorReported) != 0)
+        if (Volatile.Read(ref _disabled) != 0)
         {
             return;
         }
 
         try
         {
-            if (!TryGetGaugePanels(out var health, out var stamina))
+            var guiManager = API.GetManagedSingletonT<app.GUIManager>();
+            if (guiManager is null || guiManager.isVisibleGUIApp(app.GUIID.ID.UI010200))
             {
                 return;
             }
 
-            ApplyColor(health, _healthColor, _zeroOffset);
-            ApplyColor(stamina, _staminaColor, _zeroOffset);
+            var applied = ApplyPlayerGaugeColors(guiManager);
+            applied |= ApplyEnemyHealthColors(guiManager);
 
-            if (Interlocked.Exchange(ref _loadedLogged, 1) == 0)
+            if (applied && Interlocked.Exchange(ref _loadedLogged, 1) == 0)
             {
-                Instance.Log("Applied red health and green stamina colors to the native HUD panels.");
+                Instance.Log("Applied colors to the native player and enemy HUD panels.");
             }
         }
         catch (Exception exception)
         {
-            if (Interlocked.Exchange(ref _errorReported, 1) == 0)
+            if (Interlocked.Exchange(ref _runtimeErrorReported, 1) == 0)
             {
-                Instance.Log($"HUD recoloring stopped after an error: {exception}", ModLogLevel.Error);
+                Instance.Log($"HUD recoloring failed for a frame and will retry: {exception}", ModLogLevel.Error);
             }
         }
     }
@@ -159,22 +163,9 @@ public sealed class RedBar : ModBase
         return true;
     }
 
-    private static bool TryGetGaugePanels(
-        out via.gui.Panel health,
-        out via.gui.Panel stamina)
+    private static bool ApplyPlayerGaugeColors(app.GUIManager guiManager)
     {
-        health = null;
-        stamina = null;
-
-        var guiManager = API.GetManagedSingletonT<app.GUIManager>();
-        if (guiManager is null)
-        {
-            return false;
-        }
-
-        var loading = guiManager.isVisibleGUIApp(app.GUIID.ID.UI010200);
-        var hudVisible = guiManager.isVisibleGUIApp(app.GUIID.ID.UI020206);
-        if (loading || !hudVisible)
+        if (!guiManager.isVisibleGUIApp(app.GUIID.ID.UI020206))
         {
             return false;
         }
@@ -182,9 +173,77 @@ public sealed class RedBar : ModBase
         var rawHud = (guiManager as IObject)?.Call(
             "getGUI", (int)app.GUIID.ID.UI020206) as ManagedObject;
         var lifeGauge = rawHud?.As<app.GUI020206>()?.LifeGauge;
-        health = lifeGauge?._HpIncrease?._PanelGauge;
-        stamina = lifeGauge?._RikidoIncrease?._PanelGauge;
-        return health is not null && stamina is not null;
+        var health = lifeGauge?._HpIncrease?._PanelGauge;
+        var stamina = lifeGauge?._RikidoIncrease?._PanelGauge;
+        if (!IsAlive(health) || !IsAlive(stamina))
+        {
+            return false;
+        }
+
+        ApplyColor(health, _healthColor, _zeroOffset);
+        ApplyColor(stamina, _staminaColor, _zeroOffset);
+        return true;
+    }
+
+    private static bool ApplyEnemyHealthColors(app.GUIManager guiManager)
+    {
+        var applied = false;
+        if (guiManager.isVisibleGUIApp(app.GUIID.ID.UI020200))
+        {
+            var rawHud = (guiManager as IObject)?.Call(
+                "getGUI", (int)app.GUIID.ID.UI020200) as ManagedObject;
+            var controls = rawHud?.As<app.GUI020200>()?._GaugeControlArray;
+            var count = Math.Clamp(app.GUI020200.MAX_GAUGE_NUM, 0, MaxEnemyGaugeCount);
+            for (var index = 0; controls is not null && index < count; ++index)
+            {
+                var control = controls[index];
+                if (!IsAlive(control))
+                {
+                    continue;
+                }
+
+                var health = control._HpGaugeIncrease?._PanelGauge;
+                var stamina = control._RikidoGaugeIncrease?._PanelGauge;
+                if (!IsAlive(health) || !IsAlive(stamina))
+                {
+                    continue;
+                }
+
+                ApplyColor(health, _healthColor, _zeroOffset);
+                ApplyColor(stamina, _staminaColor, _zeroOffset);
+                applied = true;
+            }
+        }
+
+        if (guiManager.isVisibleGUIApp(app.GUIID.ID.UI020207))
+        {
+            var rawHud = (guiManager as IObject)?.Call(
+                "getGUI", (int)app.GUIID.ID.UI020207) as ManagedObject;
+            var hud = rawHud?.As<app.GUI020207>();
+            var controls = hud?._GaugeControls;
+            var count = Math.Clamp(hud?.MAX_GAUGE_NUM ?? 0, 0, MaxEnemyGaugeCount);
+            for (var index = 0; controls is not null && index < count; ++index)
+            {
+                var control = controls[index];
+                if (!IsAlive(control))
+                {
+                    continue;
+                }
+
+                var health = control._HpGaugeIncrease?._PanelGauge;
+                var stamina = control._RikidoGaugeIncrease?._PanelGauge;
+                if (!IsAlive(health) || !IsAlive(stamina))
+                {
+                    continue;
+                }
+
+                ApplyColor(health, _healthColor, _zeroOffset);
+                ApplyColor(stamina, _staminaColor, _zeroOffset);
+                applied = true;
+            }
+        }
+
+        return applied;
     }
 
     private static void ApplyColor(
@@ -206,4 +265,9 @@ public sealed class RedBar : ModBase
         color.w = alpha;
     }
 
+    private static bool IsAlive(object proxy)
+    {
+        var address = (proxy as IProxyable)?.GetAddress() ?? 0;
+        return address != 0 && ManagedObject.IsManagedObject(address);
+    }
 }
