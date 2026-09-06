@@ -36,6 +36,7 @@ public struct ModHotkey
         }
 
         return IsKeyDown(Key) &&
+               IsCurrentProcessForeground() &&
                Ctrl == IsNativeModifierDown(
                    via.hid.KeyboardKey.LControl,
                    via.hid.KeyboardKey.RControl) &&
@@ -96,8 +97,28 @@ public struct ModHotkey
     private static bool IsVirtualKeyDown(via.hid.KeyboardKey key) =>
         (GetAsyncKeyState((int)key) & 0x8000) != 0;
 
+    private static bool IsCurrentProcessForeground()
+    {
+        var window = GetForegroundWindow();
+        if (window == System.IntPtr.Zero)
+        {
+            return false;
+        }
+
+        GetWindowThreadProcessId(window, out var processId);
+        return processId == (uint)System.Environment.ProcessId;
+    }
+
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int virtualKey);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern System.IntPtr GetForegroundWindow();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(
+        System.IntPtr window,
+        out uint processId);
 
     private static bool TryGetNativeKeyboardKey(
         Hexa.NET.ImGui.ImGuiKey key,
