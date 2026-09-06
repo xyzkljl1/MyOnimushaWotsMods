@@ -246,7 +246,8 @@ public abstract partial class ModBase
         var separator = label.IndexOf("##", System.StringComparison.Ordinal);
         var name = separator >= 0 ? label[..separator] : label;
         var id = separator >= 0 ? label[(separator + 2)..] : label;
-        Hexa.NET.ImGui.ImGui.TextUnformatted(name);
+        Hexa.NET.ImGui.ImGui.TextUnformatted($"{name}:");
+        Hexa.NET.ImGui.ImGui.SameLine();
 
         var changed = false;
         var normalized = System.Math.Clamp(value, 0, options.Length - 1);
