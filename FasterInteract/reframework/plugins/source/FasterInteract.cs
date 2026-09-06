@@ -555,19 +555,37 @@ public abstract partial class ModBase
 
 public sealed class FasterInteract : ModBase
 {
+    private enum InteractionFeature
+    {
+        None,
+        OniWall,
+        Door,
+    }
+
     private static readonly FasterInteract Instance = new();
     private static readonly System.Collections.Generic.Dictionary<ulong, float>
         OriginalPlayerLayerSpeeds = new();
+    private static readonly System.Collections.Generic.Dictionary<ulong, float>
+        OriginalDoorLayerSpeeds = new();
     [ThreadStatic]
     private static ulong _enteringPlayerAction;
     private static ulong _modifiedAction;
+    private static ulong _acceleratedDoor;
+    private static InteractionFeature _activeFeature;
     private static bool _originalOverrideEnabled;
     private static float _originalOverrideSpeed;
 
+    private readonly ModConfig<bool> _oniWallEnabled;
     private readonly ModConfig<float> _oniWallSpeed;
+    private readonly ModConfig<bool> _doorEnabled;
+    private readonly ModConfig<float> _doorSpeed;
 
     private FasterInteract() : base("FasterInteract", "1.0")
     {
+        _oniWallEnabled = AddBoolConfig(
+            "Enable Oni wall acceleration",
+            true,
+            key: "OniWallEnabled");
         _oniWallSpeed = AddFloatConfig(
             "Oni wall interaction speed",
             3.0f,
@@ -575,6 +593,17 @@ public sealed class FasterInteract : ModBase
             10.0f,
             "%.1fx",
             key: "OniWallSpeed");
+        _doorEnabled = AddBoolConfig(
+            "Enable door acceleration",
+            true,
+            key: "DoorEnabled");
+        _doorSpeed = AddFloatConfig(
+            "Door interaction speed",
+            3.0f,
+            1.0f,
+            10.0f,
+            "%.1fx",
+            key: "DoorSpeed");
     }
 
     [PluginEntryPoint]
@@ -586,8 +615,8 @@ public sealed class FasterInteract : ModBase
     [PluginExitPoint]
     public static void OnUnload()
     {
-        RestorePlayerLayerSpeeds();
-        RestoreModifiedAction();
+        RestoreActiveInteraction();
+        RestoreDoorLayerSpeeds();
         _enteringPlayerAction = 0;
         Instance.UnloadMod();
     }
@@ -601,11 +630,31 @@ public sealed class FasterInteract : ModBase
         _enteringPlayerAction = args.Length > 1 ? args[1] : 0;
         try
         {
-            ApplyPlayerActionSpeed(_enteringPlayerAction);
+            ApplyPlayerActionSpeed(
+                _enteringPlayerAction,
+                applyMotionLayers: false);
         }
         catch (Exception exception)
         {
-            Instance.LogErrorOnce("Failed to prepare Oni wall interaction speed", exception);
+            Instance.LogErrorOnce("Failed to prepare interaction speed", exception);
+        }
+
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(typeof(app.GimmickDoor), "doUpdateBegin", MethodHookType.Pre)]
+    public static PreHookResult BeforeDoorUpdate(Span<ulong> args)
+    {
+        try
+        {
+            if (args.Length > 1 && args[1] == _acceleratedDoor)
+            {
+                UpdateDoorSpeed(args[1]);
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce("Failed to update door speed", exception);
         }
 
         return PreHookResult.Continue;
@@ -622,16 +671,33 @@ public sealed class FasterInteract : ModBase
 
         try
         {
-            ApplyPlayerActionSpeed(actionAddress);
-            if (actionAddress == _modifiedAction)
+            ApplyPlayerActionSpeed(actionAddress, applyMotionLayers: true);
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce("Failed to accelerate interaction", exception);
+        }
+    }
+
+    [MethodHook(
+        typeof(app.PlayerCommonAction.cSimpleInteractGimmickBase),
+        "detailUpdate",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeSimpleInteractionUpdate(Span<ulong> args)
+    {
+        try
+        {
+            if (args.Length > 1)
             {
-                ApplyPlayerLayerSpeeds();
+                ApplyPlayerActionSpeed(args[1], applyMotionLayers: true);
             }
         }
         catch (Exception exception)
         {
-            Instance.LogErrorOnce("Failed to accelerate Oni wall interaction", exception);
+            Instance.LogErrorOnce("Failed to update interaction speed", exception);
         }
+
+        return PreHookResult.Continue;
     }
 
     [MethodHook(
@@ -644,8 +710,7 @@ public sealed class FasterInteract : ModBase
         {
             if (args.Length > 1 && args[1] == _modifiedAction)
             {
-                RestorePlayerLayerSpeeds();
-                RestoreModifiedAction();
+                RestoreActiveInteraction();
             }
         }
         catch (Exception exception)
@@ -656,7 +721,9 @@ public sealed class FasterInteract : ModBase
         return PreHookResult.Continue;
     }
 
-    private static void ApplyPlayerActionSpeed(ulong actionAddress)
+    private static void ApplyPlayerActionSpeed(
+        ulong actionAddress,
+        bool applyMotionLayers)
     {
         if (actionAddress == 0 || !ManagedObject.IsManagedObject(actionAddress))
         {
@@ -678,25 +745,92 @@ public sealed class FasterInteract : ModBase
             return;
         }
 
-        var typeName = (actionObject as IObject)
-            ?.GetTypeDefinition()?.FullName;
-        if (!IsDemonTendonAction(typeName))
+        var gimmickAddress = 0ul;
+        var feature = actionAddress == _modifiedAction
+            ? _activeFeature
+            : GetInteractionFeature(actionObject, out gimmickAddress);
+        if (!IsFeatureEnabled(feature))
         {
+            if (actionAddress == _modifiedAction)
+            {
+                RestoreActiveInteraction();
+            }
+
             return;
         }
 
         if (_modifiedAction != actionAddress)
         {
-            RestoreModifiedAction();
+            RestoreActiveInteraction();
             _modifiedAction = actionAddress;
+            _activeFeature = feature;
             _originalOverrideEnabled = action._UseOverrideMotionSpeed;
             _originalOverrideSpeed = action._OverrideMotionSpeed;
+            if (feature == InteractionFeature.Door)
+            {
+                BeginDoorAcceleration(gimmickAddress);
+            }
         }
 
+        var speed = GetInteractionSpeed(feature);
         action._UseOverrideMotionSpeed = true;
-        action._OverrideMotionSpeed =
-            MathF.Max(1.0f, Instance._oniWallSpeed.Value);
+        action._OverrideMotionSpeed = speed;
+        if (applyMotionLayers)
+        {
+            ApplyPlayerLayerSpeeds(speed);
+            if (feature == InteractionFeature.Door)
+            {
+                ApplyDoorLayerSpeeds(_acceleratedDoor, speed);
+            }
+        }
     }
+
+    private static InteractionFeature GetInteractionFeature(
+        ManagedObject actionObject,
+        out ulong gimmickAddress)
+    {
+        gimmickAddress = 0;
+        var typeName = (actionObject as IObject)
+            ?.GetTypeDefinition()?.FullName;
+        if (IsDemonTendonAction(typeName))
+        {
+            return Instance._oniWallEnabled.Value
+                ? InteractionFeature.OniWall
+                : InteractionFeature.None;
+        }
+
+        if (!Instance._doorEnabled.Value)
+        {
+            return InteractionFeature.None;
+        }
+
+        var action = actionObject
+            ?.TryAs<app.PlayerCommonAction.cInteractGimmickBase>();
+        if (action is null)
+        {
+            return InteractionFeature.None;
+        }
+
+        gimmickAddress = GetActionGimmickAddress(actionObject, action);
+        return GetManagedObject<app.GimmickDoor>(gimmickAddress) is not null
+            ? InteractionFeature.Door
+            : InteractionFeature.None;
+    }
+
+    private static float GetInteractionSpeed(InteractionFeature feature) =>
+        MathF.Max(
+            1.0f,
+            feature == InteractionFeature.Door
+                ? Instance._doorSpeed.Value
+                : Instance._oniWallSpeed.Value);
+
+    private static bool IsFeatureEnabled(InteractionFeature feature) =>
+        feature switch
+        {
+            InteractionFeature.OniWall => Instance._oniWallEnabled.Value,
+            InteractionFeature.Door => Instance._doorEnabled.Value,
+            _ => false,
+        };
 
     private static bool IsDemonTendonAction(string typeName) =>
         typeName == "app.PlayerBasicAction.cDemonTendonInterruptionStart" ||
@@ -704,7 +838,30 @@ public sealed class FasterInteract : ModBase
         typeName == "app.PlayerBasicAction.cDemonTendonInterruptionEnd" ||
         typeName == "app.PlayerBasicAction.cDemonTendonInterruption";
 
-    private static void ApplyPlayerLayerSpeeds()
+    private static ulong GetActionGimmickAddress(
+        ManagedObject actionObject,
+        app.PlayerCommonAction.cInteractGimmickBase action)
+    {
+        var address = (action.ActionGimmick as IProxyable)?.GetAddress() ?? 0;
+        if (address != 0)
+        {
+            return address;
+        }
+
+        var rawGimmick = (actionObject as IObject)
+            ?.GetField("_ActionGimmick") as ManagedObject;
+        address = (rawGimmick as IProxyable)?.GetAddress() ?? 0;
+        if (address != 0)
+        {
+            return address;
+        }
+
+        var methodGimmick = (actionObject as IObject)
+            ?.Call("getGimmick") as ManagedObject;
+        return (methodGimmick as IProxyable)?.GetAddress() ?? 0;
+    }
+
+    private static void ApplyPlayerLayerSpeeds(float multiplier)
     {
         var motion = API.GetManagedSingletonT<app.PlayerManager>()
             ?.getControllingPlayerInfo()?.Character?.Motion?._Params?.MotionComponent;
@@ -713,29 +870,46 @@ public sealed class FasterInteract : ModBase
             return;
         }
 
-        ApplyLayerSpeeds(motion, motion.getLayerCount(), isPrivate: false);
-        ApplyLayerSpeeds(motion, motion.getPrivateLayerCount(), isPrivate: true);
+        ApplyLayerSpeeds(
+            motion,
+            motion.getLayerCount(),
+            isPrivate: false,
+            multiplier,
+            OriginalPlayerLayerSpeeds);
+        ApplyLayerSpeeds(
+            motion,
+            motion.getPrivateLayerCount(),
+            isPrivate: true,
+            multiplier,
+            OriginalPlayerLayerSpeeds);
     }
 
     private static void ApplyLayerSpeeds(
         via.motion.Motion motion,
         uint count,
-        bool isPrivate)
+        bool isPrivate,
+        float multiplier,
+        System.Collections.Generic.Dictionary<ulong, float> originalSpeeds)
     {
-        var multiplier = MathF.Max(1.0f, Instance._oniWallSpeed.Value);
         for (uint index = 0; index < Math.Min(count, 64u); index++)
         {
             var layer = isPrivate
                 ? motion.getPrivateLayer(index)
                 : motion.getLayer(index);
             var address = (layer as IProxyable)?.GetAddress() ?? 0;
-            if (address == 0 || OriginalPlayerLayerSpeeds.ContainsKey(address))
+            if (address == 0)
             {
                 continue;
             }
 
-            var originalSpeed = layer.Speed;
-            OriginalPlayerLayerSpeeds.Add(address, originalSpeed);
+            if (!originalSpeeds.TryGetValue(
+                    address,
+                    out var originalSpeed))
+            {
+                originalSpeed = layer.Speed;
+                originalSpeeds.Add(address, originalSpeed);
+            }
+
             if (originalSpeed > 0.0f)
             {
                 layer.Speed = originalSpeed * multiplier;
@@ -745,7 +919,76 @@ public sealed class FasterInteract : ModBase
 
     private static void RestorePlayerLayerSpeeds()
     {
-        foreach (var (address, speed) in OriginalPlayerLayerSpeeds)
+        RestoreLayerSpeeds(OriginalPlayerLayerSpeeds);
+    }
+
+    private static void BeginDoorAcceleration(ulong doorAddress)
+    {
+        if (doorAddress == 0 || doorAddress == _acceleratedDoor)
+        {
+            return;
+        }
+
+        RestoreDoorLayerSpeeds();
+        _acceleratedDoor = doorAddress;
+    }
+
+    private static void UpdateDoorSpeed(ulong doorAddress)
+    {
+        var door = GetManagedObject<app.GimmickDoor>(doorAddress);
+        if (door is null ||
+            !Instance._doorEnabled.Value ||
+            (_activeFeature != InteractionFeature.Door &&
+             door.CurrentState != app.GimmickDoor.GM_DOOR_STATE.OPENING))
+        {
+            RestoreDoorLayerSpeeds();
+            return;
+        }
+
+        ApplyDoorLayerSpeeds(doorAddress, GetInteractionSpeed(InteractionFeature.Door));
+    }
+
+    private static void ApplyDoorLayerSpeeds(
+        ulong doorAddress,
+        float multiplier)
+    {
+        var doorObject = ManagedObject.IsManagedObject(doorAddress)
+            ? ManagedObject.ToManagedObject(doorAddress)
+            : null;
+        var mcMotion = (doorObject as IObject)
+            ?.GetField("_McMotion") as ManagedObject;
+        var motionObject = (mcMotion as IObject)
+            ?.GetField("_Motion") as ManagedObject;
+        var motion = motionObject?.As<via.motion.Motion>();
+        if (motion is null)
+        {
+            return;
+        }
+
+        ApplyLayerSpeeds(
+            motion,
+            motion.getLayerCount(),
+            isPrivate: false,
+            multiplier,
+            OriginalDoorLayerSpeeds);
+        ApplyLayerSpeeds(
+            motion,
+            motion.getPrivateLayerCount(),
+            isPrivate: true,
+            multiplier,
+            OriginalDoorLayerSpeeds);
+    }
+
+    private static void RestoreDoorLayerSpeeds()
+    {
+        RestoreLayerSpeeds(OriginalDoorLayerSpeeds);
+        _acceleratedDoor = 0;
+    }
+
+    private static void RestoreLayerSpeeds(
+        System.Collections.Generic.Dictionary<ulong, float> originalSpeeds)
+    {
+        foreach (var (address, speed) in originalSpeeds)
         {
             if (!ManagedObject.IsManagedObject(address))
             {
@@ -760,7 +1003,14 @@ public sealed class FasterInteract : ModBase
             }
         }
 
-        OriginalPlayerLayerSpeeds.Clear();
+        originalSpeeds.Clear();
+    }
+
+    private static void RestoreActiveInteraction()
+    {
+        RestorePlayerLayerSpeeds();
+        RestoreModifiedAction();
+        _activeFeature = InteractionFeature.None;
     }
 
     private static void RestoreModifiedAction()
@@ -772,8 +1022,8 @@ public sealed class FasterInteract : ModBase
             return;
         }
 
-        var action = ManagedObject.ToManagedObject(actionAddress)
-            ?.As<app.PlayerCommonAction.cInteractGimmickBase>();
+        var action = GetManagedObject<app.PlayerActionBase.cPlayerActionBase>(
+            actionAddress);
         if (action is null)
         {
             return;
