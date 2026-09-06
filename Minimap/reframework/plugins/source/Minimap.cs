@@ -1421,9 +1421,7 @@ public sealed class Minimap : ModBase
                 return false;
             }
 
-            if (IsAlive(_mapGroup) && IsAlive(_circleMask) &&
-                IsAlive(_rectangleMask) && _tileSlots.Length == TileSlotCount &&
-                Array.TrueForAll(_tileSlots, IsAlive))
+            if (_tileSlots.Length == TileSlotCount)
             {
                 return true;
             }
@@ -1588,10 +1586,6 @@ public sealed class Minimap : ModBase
             }
 
             texture.Visible = false;
-            texture.AssetType = via.gui.TextureAssetType.Texture;
-            texture.UVType = via.gui.UVValueType.Rect;
-            texture.ControlPoint = via.gui.ControlPoint.CenterCenter;
-            texture.MaskType = via.gui.MaskType.Target;
             texture.setTexture(holder);
             if (Tiles.Count == 0)
             {
