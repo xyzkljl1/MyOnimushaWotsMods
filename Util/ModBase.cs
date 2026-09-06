@@ -223,7 +223,28 @@ public abstract class ModBase
     protected bool DrawButton(string label, string id) =>
         Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
 
-    protected void DrawConfigUI()
+    protected void DrawCollapsible(
+        string label,
+        string id,
+        System.Action drawContent)
+    {
+        System.ArgumentNullException.ThrowIfNull(drawContent);
+        if (!Hexa.NET.ImGui.ImGui.TreeNode($"{label}##{ModName}.{id}"))
+        {
+            return;
+        }
+
+        try
+        {
+            drawContent();
+        }
+        finally
+        {
+            Hexa.NET.ImGui.ImGui.TreePop();
+        }
+    }
+
+    protected void DrawConfigUI(System.Action drawAdditionalContent = null)
     {
         if (_configDirty && !Hexa.NET.ImGui.ImGui.IsAnyItemActive())
         {
@@ -253,6 +274,8 @@ public abstract class ModBase
                 MarkConfigDirty();
                 SaveConfig();
             }
+
+            drawAdditionalContent?.Invoke();
         }
         finally
         {
