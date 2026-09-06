@@ -425,6 +425,7 @@ public sealed class AutoLoot : ModBase
 {
     private const float RetryDelaySeconds = 1.0f;
     private const string TreasureBoxTypeName = "app.GimmickTreasureBox";
+    private const string HozukiTypeName = "app.Gm002_007";
     private const string DiscoveredChestTypeName = "app.Gm002_006";
     private const string DialogueChestTypeName = "app.Gm002_009";
     private const string ReleasedChestTypeName = "app.Gm002_010";
@@ -446,17 +447,19 @@ public sealed class AutoLoot : ModBase
     [ThreadStatic] private static ulong _checkingReleasedChest;
 
     private readonly ModConfig<bool> _gatheringItems;
+    private readonly ModConfig<bool> _hozuki;
     private readonly ModConfig<bool> _roadsideChests;
     private readonly ModConfig<float> _collectionDistance;
     private readonly HistoricalStageItemSaveRepair _stageItemSaveRepair;
 
-    private AutoLoot() : base("AutoLoot", "1.1")
+    private AutoLoot() : base("AutoLoot", "1.2")
     {
         _stageItemSaveRepair = new HistoricalStageItemSaveRepair(this);
         _gatheringItems = AddBoolConfig(
             "Gather spot and items",
             true,
             "Gathering points and loose items");
+        _hozuki = AddBoolConfig("Hozuki", true);
         _roadsideChests = AddBoolConfig(
             "junior chests",
             true,
@@ -659,6 +662,10 @@ public sealed class AutoLoot : ModBase
         }
 
         var isTreasureBox = IsTypeOrDerivedFrom(itemType, TreasureBoxTypeName);
+        var isHozuki = string.Equals(
+            itemType.FullName,
+            HozukiTypeName,
+            StringComparison.Ordinal);
         var isDialogueChest = IsTypeOrDerivedFrom(itemType, DialogueChestTypeName);
         var isSeniorChest = isDialogueChest ||
             IsTypeOrDerivedFrom(itemType, DiscoveredChestTypeName) ||
@@ -680,12 +687,12 @@ public sealed class AutoLoot : ModBase
             }
         }
 
-        if (!IsCategoryEnabled(isTreasureBox, isSeniorChest))
+        if (!IsCategoryEnabled(isTreasureBox, isSeniorChest, isHozuki))
         {
             return;
         }
 
-        if (!HasOnlyAutoLootableItems(item))
+        if (!isHozuki && !HasOnlyAutoLootableItems(item))
         {
             LastAttempts[address] = now;
             return;
@@ -824,11 +831,14 @@ public sealed class AutoLoot : ModBase
         itemClass.Equals("NPCSKIN", StringComparison.OrdinalIgnoreCase) ||
         itemClass.Equals("SWORDSKIN", StringComparison.OrdinalIgnoreCase);
 
-    private bool IsCategoryEnabled(bool isTreasureBox, bool isSeniorChest)
+    private bool IsCategoryEnabled(
+        bool isTreasureBox,
+        bool isSeniorChest,
+        bool isHozuki)
     {
         if (!isTreasureBox)
         {
-            return _gatheringItems.Value;
+            return isHozuki ? _hozuki.Value : _gatheringItems.Value;
         }
 
         // Senior-chest support remains implemented but is hidden and disabled
