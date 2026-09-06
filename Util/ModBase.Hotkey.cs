@@ -36,10 +36,16 @@ public struct ModHotkey
             return false;
         }
 
-        return Hexa.NET.ImGui.ImGui.IsKeyPressed(Key, false) &&
-               Ctrl == Hexa.NET.ImGui.ImGui.IsKeyDown(Hexa.NET.ImGui.ImGuiKey.ModCtrl) &&
-               Shift == Hexa.NET.ImGui.ImGui.IsKeyDown(Hexa.NET.ImGui.ImGuiKey.ModShift) &&
-               Alt == Hexa.NET.ImGui.ImGui.IsKeyDown(Hexa.NET.ImGui.ImGuiKey.ModAlt);
+        return IsKeyTriggered(Key) &&
+               Ctrl == IsNativeModifierDown(
+                   via.hid.KeyboardKey.LControl,
+                   via.hid.KeyboardKey.RControl) &&
+               Shift == IsNativeModifierDown(
+                   via.hid.KeyboardKey.LShift,
+                   via.hid.KeyboardKey.RShift) &&
+               Alt == IsNativeModifierDown(
+                   via.hid.KeyboardKey.LMenu,
+                   via.hid.KeyboardKey.RMenu);
     }
 
     public override string ToString()
@@ -62,6 +68,128 @@ public struct ModHotkey
         var isGamepad = value >= (int)Hexa.NET.ImGui.ImGuiKey.GamepadStart &&
                         value <= (int)Hexa.NET.ImGui.ImGuiKey.GamepadRStickDown;
         return (isKeyboard && !IsModifierKey(key)) || isGamepad;
+    }
+
+    private static bool IsKeyTriggered(Hexa.NET.ImGui.ImGuiKey key)
+    {
+        if (TryGetNativeKeyboardKey(key, out var keyboardKey))
+        {
+            return via.hid.Keyboard.MergedDevice?.isTrigger(keyboardKey) == true;
+        }
+
+        if (TryGetNativeGamePadButton(key, out var gamePadButton))
+        {
+            var device = via.hid.GamePad.MergedDevice;
+            return device is not null &&
+                   (device.ButtonDown & gamePadButton) != via.hid.GamePadButton.None;
+        }
+
+        return Hexa.NET.ImGui.ImGui.IsKeyPressed(key, false);
+    }
+
+    private static bool IsNativeModifierDown(
+        via.hid.KeyboardKey left,
+        via.hid.KeyboardKey right)
+    {
+        var keyboard = via.hid.Keyboard.MergedDevice;
+        return keyboard is not null &&
+               (keyboard.isDown(left) || keyboard.isDown(right));
+    }
+
+    private static bool TryGetNativeKeyboardKey(
+        Hexa.NET.ImGui.ImGuiKey key,
+        out via.hid.KeyboardKey keyboardKey)
+    {
+        var name = key switch
+        {
+            Hexa.NET.ImGui.ImGuiKey.LeftArrow => "Left",
+            Hexa.NET.ImGui.ImGuiKey.RightArrow => "Right",
+            Hexa.NET.ImGui.ImGuiKey.UpArrow => "Up",
+            Hexa.NET.ImGui.ImGuiKey.DownArrow => "Down",
+            Hexa.NET.ImGui.ImGuiKey.PageUp => "Prior",
+            Hexa.NET.ImGui.ImGuiKey.PageDown => "Next",
+            Hexa.NET.ImGui.ImGuiKey.Backspace => "Back",
+            Hexa.NET.ImGui.ImGuiKey.LeftSuper => "LWin",
+            Hexa.NET.ImGui.ImGuiKey.RightSuper => "RWin",
+            Hexa.NET.ImGui.ImGuiKey.Menu => "Apps",
+            Hexa.NET.ImGui.ImGuiKey.Key0 => "Alpha0",
+            Hexa.NET.ImGui.ImGuiKey.Key1 => "Alpha1",
+            Hexa.NET.ImGui.ImGuiKey.Key2 => "Alpha2",
+            Hexa.NET.ImGui.ImGuiKey.Key3 => "Alpha3",
+            Hexa.NET.ImGui.ImGuiKey.Key4 => "Alpha4",
+            Hexa.NET.ImGui.ImGuiKey.Key5 => "Alpha5",
+            Hexa.NET.ImGui.ImGuiKey.Key6 => "Alpha6",
+            Hexa.NET.ImGui.ImGuiKey.Key7 => "Alpha7",
+            Hexa.NET.ImGui.ImGuiKey.Key8 => "Alpha8",
+            Hexa.NET.ImGui.ImGuiKey.Key9 => "Alpha9",
+            Hexa.NET.ImGui.ImGuiKey.Apostrophe => "OEM_7",
+            Hexa.NET.ImGui.ImGuiKey.Comma => "OEM_Comma",
+            Hexa.NET.ImGui.ImGuiKey.Minus => "OEM_Minus",
+            Hexa.NET.ImGui.ImGuiKey.Period => "OEM_Period",
+            Hexa.NET.ImGui.ImGuiKey.Slash => "OEM_2",
+            Hexa.NET.ImGui.ImGuiKey.Semicolon => "OEM_1",
+            Hexa.NET.ImGui.ImGuiKey.Equal => "OEM_Plus",
+            Hexa.NET.ImGui.ImGuiKey.LeftBracket => "OEM_4",
+            Hexa.NET.ImGui.ImGuiKey.Backslash => "OEM_5",
+            Hexa.NET.ImGui.ImGuiKey.RightBracket => "OEM_6",
+            Hexa.NET.ImGui.ImGuiKey.GraveAccent => "OEM_3",
+            Hexa.NET.ImGui.ImGuiKey.CapsLock => "Capital",
+            Hexa.NET.ImGui.ImGuiKey.ScrollLock => "Scroll",
+            Hexa.NET.ImGui.ImGuiKey.PrintScreen => "SnapShot",
+            Hexa.NET.ImGui.ImGuiKey.Keypad0 => "NumPad0",
+            Hexa.NET.ImGui.ImGuiKey.Keypad1 => "NumPad1",
+            Hexa.NET.ImGui.ImGuiKey.Keypad2 => "NumPad2",
+            Hexa.NET.ImGui.ImGuiKey.Keypad3 => "NumPad3",
+            Hexa.NET.ImGui.ImGuiKey.Keypad4 => "NumPad4",
+            Hexa.NET.ImGui.ImGuiKey.Keypad5 => "NumPad5",
+            Hexa.NET.ImGui.ImGuiKey.Keypad6 => "NumPad6",
+            Hexa.NET.ImGui.ImGuiKey.Keypad7 => "NumPad7",
+            Hexa.NET.ImGui.ImGuiKey.Keypad8 => "NumPad8",
+            Hexa.NET.ImGui.ImGuiKey.Keypad9 => "NumPad9",
+            Hexa.NET.ImGui.ImGuiKey.KeypadDecimal => "Decimal",
+            Hexa.NET.ImGui.ImGuiKey.KeypadDivide => "Divide",
+            Hexa.NET.ImGui.ImGuiKey.KeypadMultiply => "Multiply",
+            Hexa.NET.ImGui.ImGuiKey.KeypadSubtract => "Subtract",
+            Hexa.NET.ImGui.ImGuiKey.KeypadAdd => "Add",
+            Hexa.NET.ImGui.ImGuiKey.KeypadEnter => "NumPadEnter",
+            Hexa.NET.ImGui.ImGuiKey.Oem102 => "OEM_102",
+            _ => key.ToString(),
+        };
+        return System.Enum.TryParse(name, out keyboardKey) &&
+               keyboardKey != via.hid.KeyboardKey.None;
+    }
+
+    private static bool TryGetNativeGamePadButton(
+        Hexa.NET.ImGui.ImGuiKey key,
+        out via.hid.GamePadButton button)
+    {
+        button = key switch
+        {
+            Hexa.NET.ImGui.ImGuiKey.GamepadFaceLeft => via.hid.GamePadButton.RLeft,
+            Hexa.NET.ImGui.ImGuiKey.GamepadFaceRight => via.hid.GamePadButton.RRight,
+            Hexa.NET.ImGui.ImGuiKey.GamepadFaceUp => via.hid.GamePadButton.RUp,
+            Hexa.NET.ImGui.ImGuiKey.GamepadFaceDown => via.hid.GamePadButton.RDown,
+            Hexa.NET.ImGui.ImGuiKey.GamepadDpadLeft => via.hid.GamePadButton.LLeft,
+            Hexa.NET.ImGui.ImGuiKey.GamepadDpadRight => via.hid.GamePadButton.LRight,
+            Hexa.NET.ImGui.ImGuiKey.GamepadDpadUp => via.hid.GamePadButton.LUp,
+            Hexa.NET.ImGui.ImGuiKey.GamepadDpadDown => via.hid.GamePadButton.LDown,
+            Hexa.NET.ImGui.ImGuiKey.GamepadL1 => via.hid.GamePadButton.LTrigTop,
+            Hexa.NET.ImGui.ImGuiKey.GamepadR1 => via.hid.GamePadButton.RTrigTop,
+            Hexa.NET.ImGui.ImGuiKey.GamepadL2 => via.hid.GamePadButton.LTrigBottom,
+            Hexa.NET.ImGui.ImGuiKey.GamepadR2 => via.hid.GamePadButton.RTrigBottom,
+            Hexa.NET.ImGui.ImGuiKey.GamepadL3 => via.hid.GamePadButton.LStickPush,
+            Hexa.NET.ImGui.ImGuiKey.GamepadR3 => via.hid.GamePadButton.RStickPush,
+            Hexa.NET.ImGui.ImGuiKey.GamepadLStickLeft => via.hid.GamePadButton.EmuLleft,
+            Hexa.NET.ImGui.ImGuiKey.GamepadLStickRight => via.hid.GamePadButton.EmuLright,
+            Hexa.NET.ImGui.ImGuiKey.GamepadLStickUp => via.hid.GamePadButton.EmuLup,
+            Hexa.NET.ImGui.ImGuiKey.GamepadLStickDown => via.hid.GamePadButton.EmuLdown,
+            Hexa.NET.ImGui.ImGuiKey.GamepadRStickLeft => via.hid.GamePadButton.EmuRleft,
+            Hexa.NET.ImGui.ImGuiKey.GamepadRStickRight => via.hid.GamePadButton.EmuRright,
+            Hexa.NET.ImGui.ImGuiKey.GamepadRStickUp => via.hid.GamePadButton.EmuRup,
+            Hexa.NET.ImGui.ImGuiKey.GamepadRStickDown => via.hid.GamePadButton.EmuRdown,
+            _ => via.hid.GamePadButton.None,
+        };
+        return button != via.hid.GamePadButton.None;
     }
 
     private static bool IsModifierKey(Hexa.NET.ImGui.ImGuiKey key) =>
@@ -139,18 +267,6 @@ public abstract partial class ModBase
         {
             _capturingHotkeyId = isCapturing ? null : label;
             isCapturing = !isCapturing;
-        }
-
-        Hexa.NET.ImGui.ImGui.SameLine();
-        if (Hexa.NET.ImGui.ImGui.Button($"clear{id}.Clear"))
-        {
-            value = default;
-            if (isCapturing)
-            {
-                _capturingHotkeyId = null;
-            }
-
-            changed = true;
         }
 
         if (isCapturing)

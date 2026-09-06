@@ -134,6 +134,40 @@ public abstract partial class ModBase
                 Hexa.NET.ImGui.ImGui.Checkbox(label, ref value),
             key);
 
+    protected ModConfig<int> AddRadioGroupConfig(
+        string name,
+        int defaultValue,
+        string[] options,
+        bool sameLine = true,
+        string key = null)
+    {
+        System.ArgumentNullException.ThrowIfNull(options);
+        if (options.Length == 0)
+        {
+            throw new System.ArgumentException(
+                "A radio group must contain at least one option.",
+                nameof(options));
+        }
+
+        if (defaultValue < 0 || defaultValue >= options.Length)
+        {
+            throw new System.ArgumentOutOfRangeException(nameof(defaultValue));
+        }
+
+        var labels = (string[])options.Clone();
+        for (var index = 0; index < labels.Length; index++)
+        {
+            System.ArgumentException.ThrowIfNullOrWhiteSpace(labels[index]);
+        }
+
+        return AddConfig(
+            name,
+            defaultValue,
+            (string label, ref int value) =>
+                DrawRadioGroup(label, ref value, labels, sameLine),
+            key);
+    }
+
     protected ModConfig<int> AddIntConfig(
         string name,
         int defaultValue,
@@ -202,6 +236,44 @@ public abstract partial class ModBase
 
     protected bool DrawButton(string label, string id) =>
         Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
+
+    private static bool DrawRadioGroup(
+        string label,
+        ref int value,
+        string[] options,
+        bool sameLine)
+    {
+        var separator = label.IndexOf("##", System.StringComparison.Ordinal);
+        var name = separator >= 0 ? label[..separator] : label;
+        var id = separator >= 0 ? label[(separator + 2)..] : label;
+        Hexa.NET.ImGui.ImGui.TextUnformatted(name);
+
+        var changed = false;
+        var normalized = System.Math.Clamp(value, 0, options.Length - 1);
+        if (normalized != value)
+        {
+            value = normalized;
+            changed = true;
+        }
+
+        for (var index = 0; index < options.Length; index++)
+        {
+            if (sameLine && index > 0)
+            {
+                Hexa.NET.ImGui.ImGui.SameLine();
+            }
+
+            if (Hexa.NET.ImGui.ImGui.RadioButton(
+                    $"{options[index]}##{id}.Radio.{index}",
+                    value == index))
+            {
+                value = index;
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
 
     protected void DrawCollapsible(
         string label,
