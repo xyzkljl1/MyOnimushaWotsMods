@@ -2,14 +2,13 @@ using System;
 using REFrameworkNET;
 using REFrameworkNET.Attributes;
 using REFrameworkNET.Callbacks;
-using BuffType = app.PlayerBadStatus.cPlayerItemBuff.BUFF_TYPE;
-using ParamTarget = app.user_data.ItemAdditionalParam.cGeneralParam.PARAM_TARGET;
 using ParamValueType = app.user_data.ItemAdditionalParam.cGeneralParam.VALUE_TYPE;
 
 // BEGIN copied source: Util/ModBase.cs
-// Source blob SHA-1: fda16e1bf690df89ab770438e70d909fe58fc55e
-// Source commit: b924fa0619291388ba64396ad1ddd32a91d96a34
+// Source blob SHA-1: 25417359db8c70a84c6f557d62440b857d2d6419
+// Source commit: 781ee109dd96a8780de91bf7b8c16d82c6ae9aaf
 // I do this to avoid panicing users. Copying code everythere instead of publishing a DLL is indeed stupid, but users’ antivirus software is stupider.
+// Module: Mod identity, logging, one-time error reporting, and managed-object helpers.
 public enum ModLogLevel
 {
     Info,
@@ -17,95 +16,8 @@ public enum ModLogLevel
     Error,
 }
 
-public delegate bool ModConfigRenderer<T>(string label, ref T value);
-
-public interface IModConfigEntry
+public abstract partial class ModBase
 {
-    string Key { get; }
-
-    object SerializedValue { get; }
-
-    void Draw(string id);
-
-    void Reset();
-
-    bool TryLoad(System.Text.Json.JsonElement value);
-}
-
-public sealed class ModConfig<T> : IModConfigEntry
-{
-    private readonly string _name;
-    private readonly T _defaultValue;
-    private readonly ModConfigRenderer<T> _renderer;
-    private readonly System.Action _onChanged;
-
-    internal ModConfig(
-        string key,
-        string name,
-        T defaultValue,
-        ModConfigRenderer<T> renderer,
-        System.Action onChanged)
-    {
-        Key = key;
-        _name = name;
-        _defaultValue = defaultValue;
-        _renderer = renderer;
-        _onChanged = onChanged;
-        Value = defaultValue;
-    }
-
-    public string Key { get; }
-
-    public T Value { get; private set; }
-
-    object IModConfigEntry.SerializedValue => Value;
-
-    public void Draw(string id)
-    {
-        var value = Value;
-        if (_renderer($"{_name}##{id}", ref value))
-        {
-            Value = value;
-            _onChanged();
-        }
-    }
-
-    public void Reset() => Value = _defaultValue;
-
-    public bool TryLoad(System.Text.Json.JsonElement value)
-    {
-        try
-        {
-            var loaded = System.Text.Json.JsonSerializer.Deserialize<T>(value);
-            if (loaded is null)
-            {
-                return false;
-            }
-
-            Value = loaded;
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-}
-
-public abstract class ModBase
-{
-    private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new()
-    {
-        AllowTrailingCommas = true,
-        ReadCommentHandling = System.Text.Json.JsonCommentHandling.Skip,
-        WriteIndented = true,
-    };
-
-    private readonly System.Collections.Generic.List<IModConfigEntry> _configEntries = new();
-    private System.Collections.Generic.Dictionary<string, System.Text.Json.JsonElement>
-        _savedConfig = new(System.StringComparer.Ordinal);
-    private readonly string _configPath;
-    private bool _configDirty;
     private int _errorReported;
 
     protected ModBase(string modName, string modVersion)
@@ -119,257 +31,14 @@ public abstract class ModBase
 
         ModName = modName;
         ModVersion = modVersion;
-        _configPath = GetConfigPath(modName);
-        LoadConfig();
+        InitializeOptionalFeatures();
     }
+
+    partial void InitializeOptionalFeatures();
 
     public string ModName { get; }
 
     public string ModVersion { get; }
-
-    public string ConfigPath => _configPath;
-
-    protected ModConfig<T> AddConfig<T>(
-        string name,
-        T defaultValue,
-        ModConfigRenderer<T> renderer,
-        string key = null)
-    {
-        key ??= name;
-        System.ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        System.ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        System.ArgumentNullException.ThrowIfNull(renderer);
-        if (_configEntries.Exists(entry => entry.Key == key))
-        {
-            throw new System.ArgumentException($"Duplicate configuration key: {key}", nameof(key));
-        }
-
-        var entry = new ModConfig<T>(key, name, defaultValue, renderer, MarkConfigDirty);
-        if (_savedConfig.TryGetValue(key, out var savedValue) && !entry.TryLoad(savedValue))
-        {
-            Log($"Ignoring incompatible configuration value '{key}'.", ModLogLevel.Warning);
-        }
-
-        _configEntries.Add(entry);
-        return entry;
-    }
-
-    protected ModConfig<bool> AddBoolConfig(
-        string name,
-        bool defaultValue,
-        string key = null) =>
-        AddConfig(
-            name,
-            defaultValue,
-            static (string label, ref bool value) =>
-                Hexa.NET.ImGui.ImGui.Checkbox(label, ref value),
-            key);
-
-    protected ModConfig<int> AddIntConfig(
-        string name,
-        int defaultValue,
-        int minimum,
-        int maximum,
-        string format = "%d",
-        string key = null) =>
-        AddConfig(
-            name,
-            defaultValue,
-            (string label, ref int value) =>
-                Hexa.NET.ImGui.ImGui.SliderInt(
-                    label,
-                    ref value,
-                    minimum,
-                    maximum,
-                    format),
-            key);
-
-    protected ModConfig<float> AddFloatConfig(
-        string name,
-        float defaultValue,
-        float minimum,
-        float maximum,
-        string format = "%.2f",
-        string key = null) =>
-        AddConfig(
-            name,
-            defaultValue,
-            (string label, ref float value) =>
-                Hexa.NET.ImGui.ImGui.SliderFloat(
-                    label,
-                    ref value,
-                    minimum,
-                    maximum,
-                    format),
-            key);
-
-    protected void InitializeMod()
-    {
-        SaveConfig();
-        Log($"Loaded. Configuration: {_configPath}");
-    }
-
-    protected void UnloadMod()
-    {
-        if (_configDirty)
-        {
-            SaveConfig();
-        }
-
-        ResetErrorReporting();
-    }
-
-    protected static void DrawText(string text, bool disabled = false)
-    {
-        if (disabled)
-        {
-            Hexa.NET.ImGui.ImGui.TextDisabled(text);
-        }
-        else
-        {
-            Hexa.NET.ImGui.ImGui.TextWrapped(text);
-        }
-    }
-
-    protected bool DrawButton(string label, string id) =>
-        Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
-
-    protected void DrawCollapsible(
-        string label,
-        string id,
-        System.Action drawContent)
-    {
-        System.ArgumentNullException.ThrowIfNull(drawContent);
-        if (!Hexa.NET.ImGui.ImGui.TreeNode($"{label}##{ModName}.{id}"))
-        {
-            return;
-        }
-
-        try
-        {
-            drawContent();
-        }
-        finally
-        {
-            Hexa.NET.ImGui.ImGui.TreePop();
-        }
-    }
-
-    protected void DrawConfigUI(System.Action drawAdditionalContent = null)
-    {
-        if (_configDirty && !Hexa.NET.ImGui.ImGui.IsAnyItemActive())
-        {
-            SaveConfig();
-        }
-
-        if (_configEntries.Count == 0 ||
-            !Hexa.NET.ImGui.ImGui.TreeNode($"{ModName} v{ModVersion}"))
-        {
-            return;
-        }
-
-        try
-        {
-            for (var index = 0; index < _configEntries.Count; index++)
-            {
-                _configEntries[index].Draw($"{ModName}.Config.{index}");
-            }
-
-            if (DrawButton("reset settings", "Config.Reset"))
-            {
-                foreach (var entry in _configEntries)
-                {
-                    entry.Reset();
-                }
-
-                MarkConfigDirty();
-                SaveConfig();
-            }
-
-            drawAdditionalContent?.Invoke();
-        }
-        finally
-        {
-            Hexa.NET.ImGui.ImGui.TreePop();
-        }
-    }
-
-    private static string GetConfigPath(string modName)
-    {
-        var pluginPath = REFrameworkNET.API.GetPluginDirectory(typeof(ModBase).Assembly);
-        var directory = new System.IO.DirectoryInfo(
-            pluginPath ?? System.Environment.CurrentDirectory);
-        while (directory is not null &&
-               !string.Equals(directory.Name, "reframework",
-                   System.StringComparison.OrdinalIgnoreCase))
-        {
-            directory = directory.Parent;
-        }
-
-        var reframeworkPath = directory?.FullName ??
-                              System.IO.Path.Combine(
-                                  System.Environment.CurrentDirectory,
-                                  "reframework");
-        return System.IO.Path.Combine(reframeworkPath, "data", $"{modName}.json");
-    }
-
-    private void LoadConfig()
-    {
-        if (!System.IO.File.Exists(_configPath))
-        {
-            return;
-        }
-
-        try
-        {
-            _savedConfig = System.Text.Json.JsonSerializer.Deserialize<
-                               System.Collections.Generic.Dictionary<
-                                   string,
-                                   System.Text.Json.JsonElement>>(
-                System.IO.File.ReadAllText(_configPath),
-                JsonOptions) ?? new(System.StringComparer.Ordinal);
-        }
-        catch (System.Exception exception)
-        {
-            Log($"Could not read configuration; defaults will be used: {exception.Message}",
-                ModLogLevel.Warning);
-        }
-    }
-
-    private void MarkConfigDirty() => _configDirty = true;
-
-    private void SaveConfig()
-    {
-        var temporaryPath = $"{_configPath}.tmp";
-        try
-        {
-            var values = new System.Collections.Generic.Dictionary<string, object>(
-                System.StringComparer.Ordinal);
-            foreach (var entry in _configEntries)
-            {
-                values[entry.Key] = entry.SerializedValue;
-            }
-
-            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_configPath)!);
-            System.IO.File.WriteAllText(
-                temporaryPath,
-                System.Text.Json.JsonSerializer.Serialize(values, JsonOptions));
-            System.IO.File.Move(temporaryPath, _configPath, true);
-            _configDirty = false;
-        }
-        catch (System.Exception exception)
-        {
-            try
-            {
-                System.IO.File.Delete(temporaryPath);
-            }
-            catch
-            {
-            }
-
-            Log($"Could not save configuration: {exception}", ModLogLevel.Error);
-        }
-    }
 
     protected static T GetManagedObject<T>(ulong address)
         where T : class
@@ -424,14 +93,15 @@ public abstract class ModBase
 
 public sealed class ItemDescription : ModBase
 {
-    private const int SoulReturningMirrorItemId = 19198;
-
     private static readonly System.Text.Json.JsonSerializerOptions
         LocalizationJsonOptions = new()
         {
             AllowTrailingCommas = true,
             ReadCommentHandling = System.Text.Json.JsonCommentHandling.Skip,
         };
+    private static readonly System.Text.RegularExpressions.Regex
+        DynamicPlaceholderRegex = new(
+            @"\{@(?<index>[1-9][0-9]*):(?<format>[^{}:]+)\}");
     private static readonly ItemDescription Instance = new();
     private static readonly System.Collections.Generic.Dictionary<int, string>
         DetailCache = new();
@@ -445,18 +115,34 @@ public sealed class ItemDescription : ModBase
 
     [System.ThreadStatic]
     private static PendingUpdate _inventoryUpdate;
+    [System.ThreadStatic]
+    private static PendingUpdate _medicineBagUpdate;
 
     private ItemDescription() : base("ItemDescription", "1.0")
     {
-        var dataDirectory = System.IO.Path.GetDirectoryName(ConfigPath);
-        var reframeworkDirectory = dataDirectory is null
-            ? null
-            : System.IO.Directory.GetParent(dataDirectory)?.FullName;
-        _localizationDirectory = System.IO.Path.Combine(
-            reframeworkDirectory ??
-            System.IO.Path.Combine(
-                System.Environment.CurrentDirectory,
-                "reframework"),
+        _localizationDirectory = GetLocalizationDirectory();
+    }
+
+    private static string GetLocalizationDirectory()
+    {
+        var pluginPath = API.GetPluginDirectory(typeof(ItemDescription).Assembly);
+        var directory = new System.IO.DirectoryInfo(
+            pluginPath ?? System.Environment.CurrentDirectory);
+        while (directory is not null &&
+               !string.Equals(
+                   directory.Name,
+                   "reframework",
+                   StringComparison.OrdinalIgnoreCase))
+        {
+            directory = directory.Parent;
+        }
+
+        var reframeworkPath = directory?.FullName ??
+                              System.IO.Path.Combine(
+                                  System.Environment.CurrentDirectory,
+                                  "reframework");
+        return System.IO.Path.Combine(
+            reframeworkPath,
             "plugins",
             "source",
             "ItemDescription",
@@ -573,7 +259,8 @@ public sealed class ItemDescription : ModBase
         Instance._resolvedText.Clear();
         Instance._activeText = null;
         _inventoryUpdate = default;
-        Instance.UnloadMod();
+        _medicineBagUpdate = default;
+        Instance.ResetErrorReporting();
     }
 
     [MethodHook(
@@ -613,6 +300,45 @@ public sealed class ItemDescription : ModBase
         }
     }
 
+    [MethodHook(
+        typeof(app.GUI030109),
+        "updateSelectMedicineBagDisp",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeMedicineBagSelection(Span<ulong> args)
+    {
+        _medicineBagUpdate = CaptureDirectItem(args);
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.GUI030109),
+        "updateSelectMedicineBagDisp",
+        MethodHookType.Post)]
+    public static void AfterMedicineBagSelection(ref ulong returnValue)
+    {
+        var update = _medicineBagUpdate;
+        _medicineBagUpdate = default;
+
+        try
+        {
+            if (!update.IsValid)
+            {
+                return;
+            }
+
+            var window = GetManagedObject<app.GUI030109>(update.OwnerAddress);
+            var itemId = ResolveMedicineBagId(window, update.ItemId);
+            ApplyDescription(window?._TextCaption, itemId);
+            Instance.ResetErrorReporting();
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to update the medicine bag description",
+                exception);
+        }
+    }
+
     private static PendingUpdate CaptureDirectItem(System.ReadOnlySpan<ulong> args)
     {
         if (args.Length <= 2 || args[1] == 0)
@@ -624,6 +350,30 @@ public sealed class ItemDescription : ModBase
             args[1],
             unchecked((int)args[2]),
             true);
+    }
+
+    private static int ResolveMedicineBagId(
+        app.GUI030109 window,
+        int candidate)
+    {
+        var source = app.GA.VariousData?.ItemAdditionalParam;
+        if (source?.getMedicineBagParam(candidate) is not null)
+        {
+            return candidate;
+        }
+
+        var bags = window?._BagList;
+        if (bags is null)
+        {
+            return candidate;
+        }
+
+        var index = candidate >= 0 && candidate < bags.Count
+            ? candidate
+            : window._SelectedIndex;
+        return index >= 0 && index < bags.Count
+            ? bags[index]
+            : candidate;
     }
 
     private static void ApplyDescription(via.gui.Text text, int itemId)
@@ -658,7 +408,11 @@ public sealed class ItemDescription : ModBase
             return resolved;
         }
 
-        var messageName = GetGameMessageName(key);
+        var messageName = _gameMessageNames.TryGetValue(
+            key,
+            out var configuredMessageName)
+                ? configuredMessageName
+                : null;
         if (!string.IsNullOrWhiteSpace(messageName))
         {
             try
@@ -706,45 +460,20 @@ public sealed class ItemDescription : ModBase
                     : match.Value;
             });
 
-    private string GetGameMessageName(string key)
-    {
-        return _gameMessageNames.TryGetValue(key, out var messageName)
-            ? messageName
-            : null;
-    }
-
     private static string Text(string key) => Instance.GetText(key);
-
-    private static void Replace(
-        ref string result,
-        string placeholder,
-        string value) =>
-        result = result.Replace(placeholder, value);
-
-    private static string Render(
-        string key,
-        string target = null,
-        string value = null,
-        string duration = null,
-        string cadence = null,
-        string seconds = null) =>
-        Text(key)
-            .Replace("{target}", target ?? string.Empty)
-            .Replace("{value}", value ?? string.Empty)
-            .Replace("{duration}", duration ?? string.Empty)
-            .Replace("{cadence}", cadence ?? string.Empty)
-            .Replace("{seconds}", seconds ?? string.Empty);
 
     private static string GetDetails(int itemId)
     {
-        if (itemId == SoulReturningMirrorItemId)
-        {
-            return string.Empty;
-        }
-
         if (DetailCache.TryGetValue(itemId, out var cached))
         {
             return cached;
+        }
+
+        var template = Text($"Item.{itemId}");
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            DetailCache[itemId] = string.Empty;
+            return string.Empty;
         }
 
         var source = app.GA.VariousData?.ItemAdditionalParam;
@@ -753,19 +482,53 @@ public sealed class ItemDescription : ModBase
             return null;
         }
 
-        var lines = new System.Collections.Generic.List<string>();
-        AppendGeneralItem(lines, source.getItemParam(itemId));
-        AppendMedicineBag(lines, source.getMedicineBagParam(itemId));
+        var values = new System.Collections.Generic.List<DynamicValue>();
+        CollectGeneralItem(values, source.getItemParam(itemId));
+        CollectEffects(values, source.getMedicineBagParam(itemId)?._Effects);
 
-        var details = lines.Count == 0
-            ? string.Empty
-            : string.Join("\n", lines);
+        string error = null;
+        var details = DynamicPlaceholderRegex.Replace(
+            template,
+            match =>
+            {
+                if (!int.TryParse(
+                        match.Groups["index"].Value,
+                        out var index) ||
+                    index > values.Count)
+                {
+                    error ??= $"value #{match.Groups["index"].Value} was not found";
+                    return string.Empty;
+                }
+
+                var value = values[index - 1];
+                var format = match.Groups["format"].Value;
+                var formatted = FormatDynamicValue(value, format);
+                if (formatted is null)
+                {
+                    error ??= $"format '{format}' is invalid for value #{index}";
+                    return string.Empty;
+                }
+
+                return formatted;
+            });
+        if (error is not null)
+        {
+            Instance.Log(
+                $"Ignored Item.{itemId}: {error}.",
+                ModLogLevel.Warning);
+            details = string.Empty;
+        }
+        else
+        {
+            details = details.Trim();
+        }
+
         DetailCache[itemId] = details;
         return details;
     }
 
-    private static void AppendGeneralItem(
-        System.Collections.Generic.List<string> lines,
+    private static void CollectGeneralItem(
+        System.Collections.Generic.List<DynamicValue> values,
         app.user_data.ItemAdditionalParam.cGeneralParam.cOneItem item)
     {
         if (item?._Params is not { } consumes)
@@ -775,288 +538,111 @@ public sealed class ItemDescription : ModBase
 
         foreach (var consume in consumes)
         {
-            var prefix =
-                consume?._ParamType ==
-                app.user_data.ItemAdditionalParam.cGeneralParam.PARAM_TYPE.OBTAIN_EFFECT
-                    ? Text("PickupPrefix")
-                    : string.Empty;
             if (consume?._Effects is not { } effects)
             {
                 continue;
             }
 
-            foreach (var effect in effects)
-            {
-                AppendEffect(lines, effect, prefix);
-            }
+            CollectEffects(values, effects);
         }
     }
 
-    private static void AppendMedicineBag(
-        System.Collections.Generic.List<string> lines,
-        app.user_data.ItemAdditionalParam.cMedicineBagParam bag)
+    private static void CollectEffects(
+        System.Collections.Generic.List<DynamicValue> values,
+        app.user_data.ItemAdditionalParam.cGeneralParam.cOneEffect_Array1D effects)
     {
-        if (bag?._Effects is not { } effects)
+        if (effects is null)
         {
             return;
         }
 
         foreach (var effect in effects)
         {
-            AppendEffect(lines, effect, string.Empty);
-        }
-    }
-
-    private static void AppendEffect(
-        System.Collections.Generic.List<string> lines,
-        app.user_data.ItemAdditionalParam.cGeneralParam.cOneEffect effect,
-        string prefix)
-    {
-        if (effect is null)
-        {
-            return;
-        }
-
-        var durationSuffix = DurationSuffix(effect._EffectSec);
-        if (effect._ParamTargets is { } parameters)
-        {
-            foreach (var parameter in parameters)
+            if (effect is null)
             {
-                AddLine(
-                    lines,
-                    prefix,
-                    DescribeParameter(parameter, effect, durationSuffix));
+                continue;
             }
-        }
 
-        var buffLineCount = 0;
-        if (effect._BuffTargets is { } buffs)
-        {
-            foreach (var buff in buffs)
+            if (effect._ParamTargets is { } parameters)
             {
-                if (AddLine(
-                        lines,
-                        prefix,
-                        DescribeBuff(buff, durationSuffix)))
+                foreach (var parameter in parameters)
                 {
-                    ++buffLineCount;
+                    if (parameter is null)
+                    {
+                        continue;
+                    }
+
+                    values.Add(new DynamicValue(
+                        parameter._ParamValue,
+                        parameter._ValueType,
+                        effect._EffectSec,
+                        effect._RegenerationIntervalSec));
+                }
+            }
+
+            if (effect._BuffTargets is { } buffs)
+            {
+                foreach (var buff in buffs)
+                {
+                    if (buff is null)
+                    {
+                        continue;
+                    }
+
+                    values.Add(new DynamicValue(
+                        buff._ParamValue,
+                        ParamValueType.CONSTANT,
+                        effect._EffectSec,
+                        effect._RegenerationIntervalSec));
                 }
             }
         }
-
-        if ((effect._EffectType ==
-                 app.user_data.ItemAdditionalParam.cGeneralParam.EFFECT_TYPE.INSTANT ||
-             effect._EffectType ==
-                 app.user_data.ItemAdditionalParam.cGeneralParam.EFFECT_TYPE.BUFF &&
-             buffLineCount == 0) &&
-            effect._EffectSec > 0.0f)
-        {
-            AddLine(
-                lines,
-                prefix,
-                Render("Duration", seconds: FormatNumber(effect._EffectSec)));
-        }
     }
 
-    private static string DescribeParameter(
-        app.user_data.ItemAdditionalParam.cGeneralParam.cOneParameter_General parameter,
-        app.user_data.ItemAdditionalParam.cGeneralParam.cOneEffect effect,
-        string durationSuffix)
+    private static string FormatDynamicValue(
+        DynamicValue value,
+        string format)
     {
-        if (parameter is null)
+        const string number = "0.###";
+        const string signed = "+0.###;-0.###;+0";
+        var culture = System.Globalization.CultureInfo.InvariantCulture;
+        return format switch
         {
-            return null;
-        }
-
-        var target = parameter._ParamTarget;
-        var (template, valueStyle) = target switch
-        {
-            ParamTarget.HEALTH or
-            ParamTarget.RIKIDO or
-            ParamTarget.ONI_ENERGY => ("Value", ValueStyle.Recovery),
-            ParamTarget.ONI_CHANGE_ENERGY or
-            ParamTarget.JUST_DODGE => ("Value", ValueStyle.SignedTyped),
-            ParamTarget.MEDICINE_BAG_USE_COUNT => ($"ParamType.{target}", ValueStyle.Signed),
-            ParamTarget.SOUL_LOOTBOX_AMOUNT => ("Value", ValueStyle.Signed),
-            _ => (null, default),
-        };
-        if (template is null)
-        {
-            return null;
-        }
-
-        var result = Text(template);
-        if (valueStyle == ValueStyle.Recovery &&
-            effect._EffectType ==
-                app.user_data.ItemAdditionalParam.cGeneralParam.EFFECT_TYPE.REGENERATION)
-        {
-            var interval = effect._RegenerationIntervalSec;
-            var cadence = interval > 0.0f
-                ? Render(
-                    "PerSeconds",
-                    seconds: MathF.Abs(interval - 1.0f) < 0.0005f
+            "number" => value.Value.ToString(number, culture),
+            "signed" => value.Value.ToString(signed, culture),
+            "typed" => value.ValueType == ParamValueType.PERCENT
+                ? $"{value.Value.ToString(signed, culture)}%"
+                : value.Value.ToString(signed, culture),
+            "percent" => $"{(value.Value * 100.0f).ToString(number, culture)}%",
+            "increase" =>
+                $"{((value.Value - 1.0f) * 100.0f).ToString(number, culture)}%",
+            "reduction" when value.Value >= -1000.0f =>
+                $"{((1.0f - value.Value) * 100.0f).ToString(number, culture)}%",
+            "immunity" => "100%",
+            "duration" => value.Duration > 0.0f
+                ? Text("Duration").Replace(
+                    "{seconds}",
+                    value.Duration.ToString(number, culture))
+                : string.Empty,
+            "cadence" => value.Interval > 0.0f
+                ? Text("PerSeconds").Replace(
+                    "{seconds}",
+                    MathF.Abs(value.Interval - 1.0f) < 0.0005f
                         ? string.Empty
-                        : FormatNumber(interval))
-                : string.Empty;
-            result = Text("Regeneration");
-            Replace(ref result, "{cadence}", cadence);
-            Replace(ref result, "{duration}", durationSuffix);
-        }
-
-        Replace(ref result, "{target}", Text($"ParamTarget.{target}"));
-        Replace(
-            ref result,
-            "{value}",
-            FormatRuleValue(valueStyle, parameter._ParamValue, parameter._ValueType));
-        Replace(ref result, "{duration}", string.Empty);
-        return result;
-    }
-
-    private static string DescribeBuff(
-        app.user_data.ItemAdditionalParam.cGeneralParam.cOneParameter_Buff buff,
-        string durationSuffix)
-    {
-        if (buff is null ||
-            buff._BuffTarget ==
-                BuffType.INVALID)
-        {
-            return null;
-        }
-
-        var target = buff._BuffTarget;
-        var value = buff._ParamValue;
-        (string Template, ValueStyle ValueStyle)? rule = target switch
-        {
-            BuffType.RIKIDO_DAMAGE_DISABLE or
-            BuffType.SOUL_GENERATE_ATTACK or
-            BuffType.ALWAYS_JUST_ACTION or
-            BuffType.ALL_IMMUNE =>
-                ($"BuffType.{target}", ValueStyle.None),
-            BuffType.SOUL_ADDITION_UP =>
-                ("Value", ValueStyle.ScaledPercent),
-            BuffType.GAS_IMMUNE =>
-                ("EffectReduction", ValueStyle.FullReduction),
-            BuffType.HP_DAMAGE_CUT or
-            BuffType.GAS_STATUS_DAMAGE_CUT =>
-                ("EffectReduction", ValueStyle.Reduction),
-            BuffType.RIKIDO_DAMAGE_CUT =>
-                ($"BuffType.{target}", ValueStyle.Reduction),
-            BuffType.DODGE_ATTAK_GAUGE_UP or
-            BuffType.SOUL_BOOST_GAUGE_UP =>
-                ("Value", ValueStyle.MultiplierIncrease),
-            BuffType.HP_DAMAGE_UP or
-            BuffType.RIKIDO_DAMAGE_UP =>
-                ("DamageUp", ValueStyle.ScaledPercent),
+                        : value.Interval.ToString(number, culture))
+                : string.Empty,
             _ => null,
         };
-        if (rule is not { } format)
-        {
-            return Text("UnknownBuff");
-        }
-
-        if (format.ValueStyle == ValueStyle.Reduction && value < -1000.0f)
-        {
-            return null;
-        }
-
-        return Render(
-            format.Template,
-            target: Text($"BuffTarget.{target}"),
-            value: FormatRuleValue(
-                format.ValueStyle,
-                value,
-                ParamValueType.CONSTANT),
-            duration: durationSuffix);
     }
 
-    private static string FormatRuleValue(
-        ValueStyle style,
-        float value,
-        ParamValueType valueType) =>
-        style switch
-        {
-            ValueStyle.None => null,
-            ValueStyle.Signed => FormatSigned(value),
-            ValueStyle.Recovery or
-            ValueStyle.SignedTyped => FormatSignedTypedValue(value, valueType),
-            ValueStyle.ScaledPercent => FormatPercent(value * 100.0f),
-            ValueStyle.MultiplierIncrease => FormatMultiplierIncrease(value),
-            ValueStyle.Reduction => FormatPercent((1.0f - value) * 100.0f),
-            ValueStyle.FullReduction => FormatPercent(100.0f),
-            _ => null,
-        };
+    private readonly record struct DynamicValue(
+        float Value,
+        ParamValueType ValueType,
+        float Duration,
+        float Interval);
 
-    private static string FormatMultiplierIncrease(float multiplier) =>
-        FormatPercent((multiplier - 1.0f) * 100.0f);
-
-    private static string DurationSuffix(float seconds) =>
-        seconds > 0.0f
-            ? " " + Render("Duration", seconds: FormatNumber(seconds))
-            : string.Empty;
-
-    private static string FormatSignedTypedValue(
-        float value,
-        ParamValueType valueType) =>
-        valueType == ParamValueType.PERCENT
-            ? $"{FormatSigned(value)}%"
-            : FormatSigned(value);
-
-    private static string FormatPercent(float value) =>
-        $"{FormatNumber(value)}%";
-
-    private static string FormatSigned(float value) =>
-        value >= 0.0f
-            ? $"+{FormatNumber(value)}"
-            : FormatNumber(value);
-
-    private static string FormatNumber(float value) =>
-        value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-
-    private static bool AddLine(
-        System.Collections.Generic.List<string> lines,
-        string prefix,
-        string description)
-    {
-        if (string.IsNullOrWhiteSpace(description))
-        {
-            return false;
-        }
-
-        var line = prefix + description;
-        if (lines.Contains(line))
-        {
-            return false;
-        }
-
-        lines.Add(line);
-        return true;
-    }
-
-    private enum ValueStyle
-    {
-        None,
-        Recovery,
-        Signed,
-        SignedTyped,
-        ScaledPercent,
-        MultiplierIncrease,
-        Reduction,
-        FullReduction,
-    }
-
-    private readonly struct PendingUpdate
-    {
-        public PendingUpdate(ulong ownerAddress, int itemId, bool isValid)
-        {
-            OwnerAddress = ownerAddress;
-            ItemId = itemId;
-            IsValid = isValid;
-        }
-
-        public ulong OwnerAddress { get; }
-
-        public int ItemId { get; }
-
-        public bool IsValid { get; }
-    }
+    private readonly record struct PendingUpdate(
+        ulong OwnerAddress,
+        int ItemId,
+        bool IsValid);
 }
