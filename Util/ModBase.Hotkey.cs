@@ -1,6 +1,6 @@
 // Module: Persistent keyboard/gamepad shortcuts and their ImGui editor.
 // Requires: Util/ModBase.cs and Util/ModBase.Config.cs from the same commit.
-// Add a binding with AddHotkeyConfig(), then call IsHotkeyPressed() once per frame.
+// Add a binding with AddHotkeyConfig(), then call IsHotkeyPressed() once per ImGui frame.
 public struct ModHotkey
 {
     public ModHotkey(
@@ -23,7 +23,7 @@ public struct ModHotkey
     public bool IsValid =>
         Key == Hexa.NET.ImGui.ImGuiKey.None || IsBindableKey(Key);
 
-    public bool IsDown(bool allowWhenKeyboardCaptured = false)
+    public bool IsPressed(bool allowWhenKeyboardCaptured = false)
     {
         if (Key == Hexa.NET.ImGui.ImGuiKey.None || !IsBindableKey(Key))
         {
@@ -36,7 +36,7 @@ public struct ModHotkey
             return false;
         }
 
-        return IsKeyDown(Key) &&
+        return IsKeyTriggered(Key) &&
                Ctrl == IsNativeModifierDown(
                    via.hid.KeyboardKey.LControl,
                    via.hid.KeyboardKey.RControl) &&
@@ -70,11 +70,11 @@ public struct ModHotkey
         return (isKeyboard && !IsModifierKey(key)) || isGamepad;
     }
 
-    private static bool IsKeyDown(Hexa.NET.ImGui.ImGuiKey key)
+    private static bool IsKeyTriggered(Hexa.NET.ImGui.ImGuiKey key)
     {
         if (TryGetNativeKeyboardKey(key, out var keyboardKey))
         {
-            return IsVirtualKeyDown(keyboardKey);
+            return via.hid.Keyboard.MergedDevice?.isTrigger(keyboardKey) == true;
         }
 
         if (TryGetNativeGamePadButton(key, out var gamePadButton))
@@ -84,21 +84,17 @@ public struct ModHotkey
                    (device.ButtonDown & gamePadButton) != via.hid.GamePadButton.None;
         }
 
-        return Hexa.NET.ImGui.ImGui.IsKeyDown(key);
+        return Hexa.NET.ImGui.ImGui.IsKeyPressed(key, false);
     }
 
     private static bool IsNativeModifierDown(
         via.hid.KeyboardKey left,
         via.hid.KeyboardKey right)
     {
-        return IsVirtualKeyDown(left) || IsVirtualKeyDown(right);
+        var keyboard = via.hid.Keyboard.MergedDevice;
+        return keyboard is not null &&
+               (keyboard.isDown(left) || keyboard.isDown(right));
     }
-
-    private static bool IsVirtualKeyDown(via.hid.KeyboardKey key) =>
-        (GetAsyncKeyState((int)key) & 0x8000) != 0;
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern short GetAsyncKeyState(int virtualKey);
 
     private static bool TryGetNativeKeyboardKey(
         Hexa.NET.ImGui.ImGuiKey key,
@@ -210,8 +206,6 @@ public struct ModHotkey
 public abstract partial class ModBase
 {
     private string _capturingHotkeyId;
-    private readonly System.Collections.Generic.Dictionary<ModConfig<ModHotkey>, bool>
-        _hotkeyDownStates = new();
 
     protected ModConfig<ModHotkey> AddHotkeyConfig(
         string name,
@@ -240,15 +234,12 @@ public abstract partial class ModBase
         return AddConfig(name, defaultValue, DrawHotkeyConfig, key);
     }
 
-    protected bool IsHotkeyPressed(
+    protected static bool IsHotkeyPressed(
         ModConfig<ModHotkey> hotkey,
         bool allowWhenKeyboardCaptured = false)
     {
         System.ArgumentNullException.ThrowIfNull(hotkey);
-        var isDown = hotkey.Value.IsDown(allowWhenKeyboardCaptured);
-        var wasDown = _hotkeyDownStates.TryGetValue(hotkey, out var previous) && previous;
-        _hotkeyDownStates[hotkey] = isDown;
-        return isDown && !wasDown;
+        return hotkey.Value.IsPressed(allowWhenKeyboardCaptured);
     }
 
     private bool DrawHotkeyConfig(string label, ref ModHotkey value)
