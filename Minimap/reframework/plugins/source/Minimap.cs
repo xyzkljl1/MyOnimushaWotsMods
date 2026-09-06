@@ -665,6 +665,7 @@ public sealed class Minimap : ModBase
     private const string LegacyTileNamePrefix = "LittleMap_";
     private const long SetPlayObjectNameAddress = 0x148afd3a0;
     private const long RetryDelayMilliseconds = 1000;
+    private const ushort MapDrawPriority = ushort.MaxValue;
 
     private const uint BorderColor = 0xE0D0B070;
     private const uint PlayerOutlineColor = 0xF0000000;
@@ -1223,6 +1224,8 @@ public sealed class Minimap : ModBase
                 throw new InvalidOperationException(
                     "addChildByScript returned false for the map group.");
             }
+
+            group.Priority = MapDrawPriority;
 
             circle.Visible = false;
             circle.MaskType = via.gui.MaskType.Mask;
