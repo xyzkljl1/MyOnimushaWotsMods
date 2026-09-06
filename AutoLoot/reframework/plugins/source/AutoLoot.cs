@@ -6,8 +6,8 @@ using REFrameworkNET.Attributes;
 using REFrameworkNET.Callbacks;
 
 // BEGIN copied source: Util/ModBase.cs
-// Source blob SHA-1: 2885bdae92689aa27743326540ec40410e46356e
-// Source commit: 7c0372f0ed752663f8f2aa4408c2115804233b0c
+// Source blob SHA-1: fda16e1bf690df89ab770438e70d909fe58fc55e
+// Source commit: 12267406c1b00c3aea4e169c5ead60daa4df0613
 // I do this to avoid panicing users. Copying code everythere instead of publishing a DLL is indeed stupid, but users’ antivirus software is stupider.
 public enum ModLogLevel
 {
@@ -233,7 +233,28 @@ public abstract class ModBase
     protected bool DrawButton(string label, string id) =>
         Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
 
-    protected void DrawConfigUI()
+    protected void DrawCollapsible(
+        string label,
+        string id,
+        System.Action drawContent)
+    {
+        System.ArgumentNullException.ThrowIfNull(drawContent);
+        if (!Hexa.NET.ImGui.ImGui.TreeNode($"{label}##{ModName}.{id}"))
+        {
+            return;
+        }
+
+        try
+        {
+            drawContent();
+        }
+        finally
+        {
+            Hexa.NET.ImGui.ImGui.TreePop();
+        }
+    }
+
+    protected void DrawConfigUI(System.Action drawAdditionalContent = null)
     {
         if (_configDirty && !Hexa.NET.ImGui.ImGui.IsAnyItemActive())
         {
@@ -263,6 +284,8 @@ public abstract class ModBase
                 MarkConfigDirty();
                 SaveConfig();
             }
+
+            drawAdditionalContent?.Invoke();
         }
         finally
         {
@@ -559,8 +582,7 @@ public sealed class AutoLoot : ModBase
     [Callback(typeof(ImGuiDrawUI), CallbackType.Post)]
     public static void OnDrawUI()
     {
-        Instance.DrawConfigUI();
-        Instance._stageItemSaveRepair.DrawUI();
+        Instance.DrawConfigUI(Instance._stageItemSaveRepair.DrawUI);
     }
 
     [PluginExitPoint]
@@ -775,7 +797,7 @@ public sealed class AutoLoot : ModBase
         autoLootable =
             !itemClass.Equals("INVALID", StringComparison.OrdinalIgnoreCase) &&
             category != unchecked((int)app.ItemEnum.CATEGORY_Fixed.INVALID) &&
-            (itemClass.EndsWith("SKIN", StringComparison.OrdinalIgnoreCase) ||
+            (IsSkinClass(itemClass) ||
              category == unchecked((int)app.ItemEnum.CATEGORY_Fixed.EQUIPABLE) ||
              category == unchecked((int)app.ItemEnum.CATEGORY_Fixed.GROWTH_MATERIAL) ||
              category == unchecked((int)app.ItemEnum.CATEGORY_Fixed.TRIBUTE) ||
@@ -794,6 +816,13 @@ public sealed class AutoLoot : ModBase
         var separator = itemId.IndexOf('_');
         return separator < 0 ? itemId : itemId.Substring(0, separator);
     }
+
+    private static bool IsSkinClass(string itemClass) =>
+        itemClass.Equals("BODYSKIN", StringComparison.OrdinalIgnoreCase) ||
+        itemClass.Equals("CLOAKSKIN", StringComparison.OrdinalIgnoreCase) ||
+        itemClass.Equals("GAUNTLETSKIN", StringComparison.OrdinalIgnoreCase) ||
+        itemClass.Equals("NPCSKIN", StringComparison.OrdinalIgnoreCase) ||
+        itemClass.Equals("SWORDSKIN", StringComparison.OrdinalIgnoreCase);
 
     private bool IsCategoryEnabled(bool isTreasureBox, bool isSeniorChest)
     {
@@ -832,14 +861,14 @@ public sealed class AutoLoot : ModBase
             }
         }
 
-        public void DrawUI()
-        {
-            if (!Hexa.NET.ImGui.ImGui.TreeNode(
-                    $"Historical save repair (debug)##{_owner.ModName}.StageItemRepair"))
-            {
-                return;
-            }
+        public void DrawUI() =>
+            _owner.DrawCollapsible(
+                "Historical save repair (debug)",
+                "StageItemRepair",
+                DrawContents);
 
+        private void DrawContents()
+        {
             try
             {
                 AutoLoot.DrawText(
@@ -855,14 +884,30 @@ public sealed class AutoLoot : ModBase
                 }
                 else
                 {
-                    DrawButton(app.ItemEnum.ID_Fixed.STAGE100_ITEM001);
-                    DrawButton(app.ItemEnum.ID_Fixed.STAGE100_ITEM002);
-                    DrawButton(app.ItemEnum.ID_Fixed.STAGE100_ITEM003);
-                    DrawButton(app.ItemEnum.ID_Fixed.STAGE100_ITEM004);
-                    DrawButton(app.ItemEnum.ID_Fixed.STAGE204_ITEM001);
-                    DrawButton(app.ItemEnum.ID_Fixed.STAGE204_ITEM002);
-                    DrawButton(app.ItemEnum.ID_Fixed.STAGE209_ITEM000);
-                    DrawButton(app.ItemEnum.ID_Fixed.STAGE213_ITEM000);
+                    DrawButton(
+                        app.ItemEnum.ID_Fixed.STAGE100_ITEM001,
+                        "八大力尊：老七 / Stout Pillar No. Seven");
+                    DrawButton(
+                        app.ItemEnum.ID_Fixed.STAGE100_ITEM002,
+                        "八大力尊：老大 / Stout Pillar No. One");
+                    DrawButton(
+                        app.ItemEnum.ID_Fixed.STAGE100_ITEM003,
+                        "八大力尊：老三 / Stout Pillar No. Three");
+                    DrawButton(
+                        app.ItemEnum.ID_Fixed.STAGE100_ITEM004,
+                        "废弃寺庙的钥匙 / Abandoned Temple Key");
+                    DrawButton(
+                        app.ItemEnum.ID_Fixed.STAGE204_ITEM001,
+                        "诡异的面具 / Unsettling Mask");
+                    DrawButton(
+                        app.ItemEnum.ID_Fixed.STAGE204_ITEM002,
+                        "染血钥匙 / Bloodstained Key");
+                    DrawButton(
+                        app.ItemEnum.ID_Fixed.STAGE209_ITEM000,
+                        "地牢钥匙 / Dungeon Key");
+                    DrawButton(
+                        app.ItemEnum.ID_Fixed.STAGE213_ITEM000,
+                        "后门钥匙 / Back Door Key");
                 }
 
                 AutoLoot.DrawText(System.Threading.Volatile.Read(ref _status));
@@ -870,10 +915,6 @@ public sealed class AutoLoot : ModBase
             catch (Exception exception)
             {
                 _owner.LogErrorOnce("Could not draw the historical save-repair UI", exception);
-            }
-            finally
-            {
-                Hexa.NET.ImGui.ImGui.TreePop();
             }
         }
 
@@ -883,11 +924,11 @@ public sealed class AutoLoot : ModBase
             _status = "No repair event has been replayed.";
         }
 
-        private void DrawButton(app.ItemEnum.ID_Fixed itemId)
+        private void DrawButton(app.ItemEnum.ID_Fixed itemId, string itemName)
         {
             var label = itemId.ToString();
             if (_owner.DrawButton(
-                    $"Replay {label} event once",
+                    $"Replay {itemName} event once",
                     $"StageItemRepair.{label}"))
             {
                 System.Threading.Interlocked.Exchange(
