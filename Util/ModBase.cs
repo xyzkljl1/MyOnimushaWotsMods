@@ -86,6 +86,7 @@ public abstract class ModBase
     private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new()
     {
         AllowTrailingCommas = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         ReadCommentHandling = System.Text.Json.JsonCommentHandling.Skip,
         WriteIndented = true,
     };
