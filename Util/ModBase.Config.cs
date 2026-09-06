@@ -206,6 +206,28 @@ public abstract partial class ModBase
                     format),
             key);
 
+    protected ModConfig<float> AddPixelInputConfig(
+        string name,
+        float defaultValue,
+        float minimum,
+        float maximum,
+        string key = null)
+    {
+        if (!float.IsFinite(defaultValue) || !float.IsFinite(minimum) ||
+            !float.IsFinite(maximum) || minimum > maximum ||
+            defaultValue < minimum || defaultValue > maximum)
+        {
+            throw new System.ArgumentOutOfRangeException(nameof(defaultValue));
+        }
+
+        return AddConfig(
+            name,
+            System.MathF.Round(defaultValue),
+            (string label, ref float value) =>
+                DrawPixelInput(label, ref value, minimum, maximum),
+            key);
+    }
+
     protected void InitializeMod()
     {
         SaveConfig();
@@ -274,6 +296,28 @@ public abstract partial class ModBase
         }
 
         return changed;
+    }
+
+    private static bool DrawPixelInput(
+        string label,
+        ref float value,
+        float minimum,
+        float maximum)
+    {
+        var original = value;
+        if (!float.IsFinite(value))
+        {
+            value = minimum;
+        }
+
+        var changed = Hexa.NET.ImGui.ImGui.InputFloat(
+            label,
+            ref value,
+            1.0f,
+            100.0f,
+            "%.0f");
+        value = System.Math.Clamp(System.MathF.Round(value), minimum, maximum);
+        return changed || value != original;
     }
 
     protected void DrawCollapsible(
