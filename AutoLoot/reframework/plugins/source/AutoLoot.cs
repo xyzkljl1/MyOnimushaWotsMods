@@ -6,8 +6,9 @@ using REFrameworkNET.Attributes;
 using REFrameworkNET.Callbacks;
 
 // BEGIN copied source: Util/ModBase.cs
-// Source blob SHA-1: af60f7c7749cb53dce9ddaf498595c3cf020f940
-// Source commit: afe2512e9f66d7a98d90437b02f16dfa787bda52
+// Source blob SHA-1: 2885bdae92689aa27743326540ec40410e46356e
+// Source commit: 7c0372f0ed752663f8f2aa4408c2115804233b0c
+// I do this to avoid panicing users. Copying code everythere instead of publishing a DLL is indeed stupid, but users’ antivirus software is stupider.
 public enum ModLogLevel
 {
     Info,
@@ -217,6 +218,21 @@ public abstract class ModBase
         ResetErrorReporting();
     }
 
+    protected static void DrawText(string text, bool disabled = false)
+    {
+        if (disabled)
+        {
+            Hexa.NET.ImGui.ImGui.TextDisabled(text);
+        }
+        else
+        {
+            Hexa.NET.ImGui.ImGui.TextWrapped(text);
+        }
+    }
+
+    protected bool DrawButton(string label, string id) =>
+        Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
+
     protected void DrawConfigUI()
     {
         if (_configDirty && !Hexa.NET.ImGui.ImGui.IsAnyItemActive())
@@ -237,7 +253,7 @@ public abstract class ModBase
                 _configEntries[index].Draw($"{ModName}.Config.{index}");
             }
 
-            if (Hexa.NET.ImGui.ImGui.Button($"reset settings##{ModName}.Config.Reset"))
+            if (DrawButton("reset settings", "Config.Reset"))
             {
                 foreach (var entry in _configEntries)
                 {
@@ -407,9 +423,11 @@ public sealed class AutoLoot : ModBase
     private readonly ModConfig<bool> _gatheringItems;
     private readonly ModConfig<bool> _roadsideChests;
     private readonly ModConfig<float> _collectionDistance;
+    private readonly HistoricalStageItemSaveRepair _stageItemSaveRepair;
 
-    private AutoLoot() : base("AutoLoot", "1.0")
+    private AutoLoot() : base("AutoLoot", "1.1")
     {
+        _stageItemSaveRepair = new HistoricalStageItemSaveRepair(this);
         _gatheringItems = AddBoolConfig(
             "Gather spot and items",
             true,
@@ -441,6 +459,8 @@ public sealed class AutoLoot : ModBase
                 PendingItems.Clear();
                 return;
             }
+
+            Instance._stageItemSaveRepair.Update();
 
             _playerManager ??= API.GetManagedSingletonT<app.PlayerManager>();
             var playerTransform = _playerManager
@@ -535,7 +555,11 @@ public sealed class AutoLoot : ModBase
         QueueAvailableItem(ref returnValue, ref _checkingReleasedChest);
 
     [Callback(typeof(ImGuiDrawUI), CallbackType.Post)]
-    public static void OnDrawUI() => Instance.DrawConfigUI();
+    public static void OnDrawUI()
+    {
+        Instance.DrawConfigUI();
+        Instance._stageItemSaveRepair.DrawUI();
+    }
 
     [PluginExitPoint]
     public static void OnUnload()
@@ -548,6 +572,7 @@ public sealed class AutoLoot : ModBase
         _checkingAttachedItem = 0;
         _checkingDiscoveredChest = 0;
         _checkingReleasedChest = 0;
+        Instance._stageItemSaveRepair.Reset();
         PendingItems.Clear();
         ProcessingItems.Clear();
         LastAttempts.Clear();
@@ -689,4 +714,124 @@ public sealed class AutoLoot : ModBase
         string fullName) =>
         string.Equals(type.FullName, fullName, StringComparison.Ordinal) ||
         type.IsDerivedFrom(fullName);
+
+    // Repairs saves blocked by a historical AutoLoot bug that collected Stage items
+    // before the matching story objective was active. It never runs automatically.
+    private sealed class HistoricalStageItemSaveRepair
+    {
+        private readonly AutoLoot _owner;
+        private int _pendingItemEvent;
+        private string _status = "No repair event has been replayed.";
+
+        public HistoricalStageItemSaveRepair(AutoLoot owner) => _owner = owner;
+
+        public void Update()
+        {
+            var itemId = System.Threading.Interlocked.Exchange(ref _pendingItemEvent, 0);
+            if (itemId != 0)
+            {
+                Replay(itemId);
+            }
+        }
+
+        public void DrawUI()
+        {
+            if (!Hexa.NET.ImGui.ImGui.TreeNode(
+                    $"Historical save repair (debug)##{_owner.ModName}.StageItemRepair"))
+            {
+                return;
+            }
+
+            try
+            {
+                AutoLoot.DrawText(
+                    "This tool only repairs saves blocked by a bug in historical AutoLoot " +
+                    "versions that collected a Stage item too early. NEVER click a button " +
+                    "unless a bug involving that exact item has blocked story progression. " +
+                    "Replaying the wrong event may damage story state. Back up the save first. " +
+                    "These buttons do not add items.");
+
+                if (System.Threading.Volatile.Read(ref _pendingItemEvent) != 0)
+                {
+                    AutoLoot.DrawText("Repair queued...", true);
+                }
+                else
+                {
+                    DrawButton(app.ItemEnum.ID_Fixed.STAGE100_ITEM001);
+                    DrawButton(app.ItemEnum.ID_Fixed.STAGE100_ITEM002);
+                    DrawButton(app.ItemEnum.ID_Fixed.STAGE100_ITEM003);
+                    DrawButton(app.ItemEnum.ID_Fixed.STAGE100_ITEM004);
+                    DrawButton(app.ItemEnum.ID_Fixed.STAGE204_ITEM001);
+                    DrawButton(app.ItemEnum.ID_Fixed.STAGE204_ITEM002);
+                    DrawButton(app.ItemEnum.ID_Fixed.STAGE209_ITEM000);
+                    DrawButton(app.ItemEnum.ID_Fixed.STAGE213_ITEM000);
+                }
+
+                AutoLoot.DrawText(System.Threading.Volatile.Read(ref _status));
+            }
+            catch (Exception exception)
+            {
+                _owner.LogErrorOnce("Could not draw the historical save-repair UI", exception);
+            }
+            finally
+            {
+                Hexa.NET.ImGui.ImGui.TreePop();
+            }
+        }
+
+        public void Reset()
+        {
+            _pendingItemEvent = 0;
+            _status = "No repair event has been replayed.";
+        }
+
+        private void DrawButton(app.ItemEnum.ID_Fixed itemId)
+        {
+            var label = itemId.ToString();
+            if (_owner.DrawButton(
+                    $"Replay {label} event once",
+                    $"StageItemRepair.{label}"))
+            {
+                System.Threading.Interlocked.Exchange(
+                    ref _pendingItemEvent,
+                    unchecked((int)itemId));
+                System.Threading.Volatile.Write(
+                    ref _status,
+                    $"Queued {label} for the next stable game update.");
+            }
+        }
+
+        private void Replay(int itemId)
+        {
+            try
+            {
+                var storyManager = API.GetManagedSingletonT<app.StoryManager>();
+                if (storyManager is null)
+                {
+                    System.Threading.Volatile.Write(
+                        ref _status,
+                        "StoryManager is unavailable. Enter gameplay and try again.");
+                    _owner.Log(
+                        "Historical save repair skipped because StoryManager is unavailable.",
+                        ModLogLevel.Warning);
+                    return;
+                }
+
+                storyManager.evGetItem(itemId, 1u);
+                System.Threading.Volatile.Write(
+                    ref _status,
+                    "Event replayed. Wait for the story to advance, then save in a new slot.");
+                _owner.Log(
+                    $"Replayed historical Stage-item event once: itemId={itemId}. " +
+                    "No item was added.");
+            }
+            catch (Exception exception)
+            {
+                System.Threading.Volatile.Write(
+                    ref _status,
+                    "Repair failed. Check re2_framework_log.txt and try again.");
+                _owner.LogErrorOnce("Historical Stage-item save repair failed", exception);
+            }
+        }
+    }
 }
