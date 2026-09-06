@@ -922,7 +922,7 @@ public sealed class Minimap : ModBase
     private const int TilePixels = 2048;
     private const float WorldToMapPixels = 6.4f;
     private const int TileSlotCount = 16;
-    private const string GuiResourcePath = "GUI/Minimap/Minimap.gui";
+    private const string GuiResourcePath = "GUI/Minimap/MinimapHUD.gui";
     private const string GuiGameObjectName = "Minimap_GUI";
     private const string WindowName = "Minimap_Window";
     private const string GroupName = "Minimap_Group";
@@ -935,9 +935,21 @@ public sealed class Minimap : ModBase
     private const string PlayerArrowPrefix = "Minimap_PlayerArrow_";
     private const string CameraArrowOutlinePrefix = "Minimap_CameraArrowOutline_";
     private const string CameraArrowPrefix = "Minimap_CameraArrow_";
+    private const string WallMarkerOutlinePrefix = "Minimap_WallMarkerOutline_";
+    private const string WallMarkerPrefix = "Minimap_WallMarker_";
+    private const string ChestMarkerOutlinePrefix = "Minimap_ChestMarkerOutline_";
+    private const string ChestMarkerPrefix = "Minimap_ChestMarker_";
+    private const string ChestMarkerLidPrefix = "Minimap_ChestMarkerLid_";
+    private const string FootprintMarkerOutlinePrefix =
+        "Minimap_FootprintMarkerOutline_";
+    private const string FootprintMarkerPrefix = "Minimap_FootprintMarker_";
     private const string TileNamePrefix = "Minimap_Tile_";
     private const long RetryDelayMilliseconds = 1000;
+    private const long MarkerRefreshMilliseconds = 1000;
     private const long GuiLoadTimeoutMilliseconds = 10000;
+    private const int WallMarkerCount = 25;
+    private const int ChestMarkerCount = 32;
+    private const int FootprintMarkerCount = 24;
     private const ushort MapDrawPriority = ushort.MaxValue - 1;
     private const ushort OverlayDrawPriority = ushort.MaxValue;
     private const float BorderThickness = 1.5f;
@@ -948,10 +960,15 @@ public sealed class Minimap : ModBase
     private const float CameraRearDistance = 25.0f;
     private const float CameraHalfWidth = 9.0f;
     private const int PlayerFillPartCount = 9;
-    private const float PlayerFillOverlap = 0.75f;
+    private const int CameraFillPartCount = 9;
+    private const float TriangleFillOverlap = 0.75f;
     private const float PlayerOutlineThickness = 4.0f;
-    private const float CameraOutlineThickness = 7.0f;
-    private const float CameraArrowThickness = 4.5f;
+    private const float CameraOutlineThickness = 4.0f;
+    private const float WallMarkerSize = 13.0f;
+    private const float ChestMarkerWidth = 16.0f;
+    private const float ChestMarkerHeight = 12.0f;
+    private const float FootprintMarkerWidth = 4.0f;
+    private const float FootprintMarkerHeight = 7.0f;
     private const float MaximumOffset = 16383.0f;
 
     private const int MapFixed = 0;
@@ -973,6 +990,8 @@ public sealed class Minimap : ModBase
 
     private static readonly Minimap Instance = new();
     private static readonly List<MapTile> Tiles = new();
+    private static readonly List<MarkerPosition> WallPositions = new();
+    private static readonly List<MarkerPosition> ChestPositions = new();
 
     private readonly ModConfig<ModHotkey> _toggleHotkey;
     private readonly ModConfig<int> _orientation;
@@ -982,6 +1001,9 @@ public sealed class Minimap : ModBase
     private readonly ModConfig<float> _pixelsPerMeter;
     private readonly ModConfig<float> _rightOffset;
     private readonly ModConfig<float> _topOffset;
+    private readonly ModConfig<bool> _showOniWalls;
+    private readonly ModConfig<bool> _showChests;
+    private readonly ModConfig<bool> _showFootprints;
     private bool _isVisible = true;
 
     private static MapDefinition _map;
@@ -1001,10 +1023,19 @@ public sealed class Minimap : ModBase
     private static via.gui.Rect[] _playerArrows = Array.Empty<via.gui.Rect>();
     private static via.gui.Rect[] _cameraArrowOutlines = Array.Empty<via.gui.Rect>();
     private static via.gui.Rect[] _cameraArrows = Array.Empty<via.gui.Rect>();
+    private static via.gui.Rect[] _wallMarkerOutlines = Array.Empty<via.gui.Rect>();
+    private static via.gui.Rect[] _wallMarkers = Array.Empty<via.gui.Rect>();
+    private static via.gui.Rect[] _chestMarkerOutlines = Array.Empty<via.gui.Rect>();
+    private static via.gui.Rect[] _chestMarkers = Array.Empty<via.gui.Rect>();
+    private static via.gui.Rect[] _chestMarkerLids = Array.Empty<via.gui.Rect>();
+    private static via.gui.Rect[] _footprintMarkerOutlines = Array.Empty<via.gui.Rect>();
+    private static via.gui.Rect[] _footprintMarkers = Array.Empty<via.gui.Rect>();
     private static via.gui.Texture[] _tileSlots = Array.Empty<via.gui.Texture>();
     private static long _guiLoadStartedAt;
     private static long _nextRetryTick;
+    private static long _nextMarkerRefreshTick;
     private static int _errorReported;
+    private static int _markerErrorReported;
     private static int _cleanupErrorReported;
 
     private Minimap() : base("Minimap", "1.1")
@@ -1026,6 +1057,9 @@ public sealed class Minimap : ModBase
             "Right offset (px)", 36.0f, 0.0f, MaximumOffset, key: "Right margin");
         _topOffset = AddPixelInputConfig(
             "Top offset (px)", 80.0f, 0.0f, MaximumOffset, key: "Top margin");
+        _showOniWalls = AddBoolConfig("Show Oni walls", true);
+        _showChests = AddBoolConfig("Show chests", true);
+        _showFootprints = AddBoolConfig("Show footprints", true);
     }
 
     [PluginEntryPoint]
@@ -1041,7 +1075,9 @@ public sealed class Minimap : ModBase
         ResetMap();
         DestroyNativeGui();
         _nextRetryTick = 0;
+        _nextMarkerRefreshTick = 0;
         _errorReported = 0;
+        _markerErrorReported = 0;
         _cleanupErrorReported = 0;
         Instance.UnloadMod();
         Instance.Log("Unloaded and removed native map textures.");
@@ -1171,6 +1207,17 @@ public sealed class Minimap : ModBase
                 top,
                 displayWidth,
                 displayHeight,
+                mapRotation,
+                Instance._shape.Value == CircleShape);
+            UpdateNativeMarkers(
+                guiManager,
+                position.x,
+                position.z,
+                left,
+                top,
+                displayWidth,
+                displayHeight,
+                mapScale,
                 mapRotation,
                 Instance._shape.Value == CircleShape);
             UpdateNativeOverlay(
@@ -1469,8 +1516,21 @@ public sealed class Minimap : ModBase
         var borders = FindRects(view, BorderNamePrefix, 4);
         var playerArrowOutlines = FindRects(view, PlayerArrowOutlinePrefix, 3);
         var playerArrows = FindRects(view, PlayerArrowPrefix, PlayerFillPartCount);
-        var cameraArrowOutlines = FindRects(view, CameraArrowOutlinePrefix, 2);
-        var cameraArrows = FindRects(view, CameraArrowPrefix, 2);
+        var cameraArrowOutlines = FindRects(view, CameraArrowOutlinePrefix, 3);
+        var cameraArrows = FindRects(
+            view, CameraArrowPrefix, CameraFillPartCount);
+        var wallMarkerOutlines = FindRects(
+            view, WallMarkerOutlinePrefix, WallMarkerCount);
+        var wallMarkers = FindRects(view, WallMarkerPrefix, WallMarkerCount);
+        var chestMarkerOutlines = FindRects(
+            view, ChestMarkerOutlinePrefix, ChestMarkerCount);
+        var chestMarkers = FindRects(view, ChestMarkerPrefix, ChestMarkerCount);
+        var chestMarkerLids = FindRects(
+            view, ChestMarkerLidPrefix, ChestMarkerCount);
+        var footprintMarkerOutlines = FindRects(
+            view, FootprintMarkerOutlinePrefix, FootprintMarkerCount);
+        var footprintMarkers = FindRects(
+            view, FootprintMarkerPrefix, FootprintMarkerCount);
         var slots = new via.gui.Texture[TileSlotCount];
         for (var index = 0; index < slots.Length; ++index)
         {
@@ -1486,6 +1546,13 @@ public sealed class Minimap : ModBase
             Array.Exists(playerArrows, part => !IsAlive(part)) ||
             Array.Exists(cameraArrowOutlines, part => !IsAlive(part)) ||
             Array.Exists(cameraArrows, part => !IsAlive(part)) ||
+            Array.Exists(wallMarkerOutlines, part => !IsAlive(part)) ||
+            Array.Exists(wallMarkers, part => !IsAlive(part)) ||
+            Array.Exists(chestMarkerOutlines, part => !IsAlive(part)) ||
+            Array.Exists(chestMarkers, part => !IsAlive(part)) ||
+            Array.Exists(chestMarkerLids, part => !IsAlive(part)) ||
+            Array.Exists(footprintMarkerOutlines, part => !IsAlive(part)) ||
+            Array.Exists(footprintMarkers, part => !IsAlive(part)) ||
             Array.Exists(slots, slot => !IsAlive(slot)))
         {
             throw new InvalidOperationException(
@@ -1498,6 +1565,13 @@ public sealed class Minimap : ModBase
         _playerArrows = playerArrows;
         _cameraArrowOutlines = cameraArrowOutlines;
         _cameraArrows = cameraArrows;
+        _wallMarkerOutlines = wallMarkerOutlines;
+        _wallMarkers = wallMarkers;
+        _chestMarkerOutlines = chestMarkerOutlines;
+        _chestMarkers = chestMarkers;
+        _chestMarkerLids = chestMarkerLids;
+        _footprintMarkerOutlines = footprintMarkerOutlines;
+        _footprintMarkers = footprintMarkers;
         _guiWindow.ResolutionAdjust = false;
         _guiWindow.SafeAreaAdjust = false;
         _mapGroup.Visible = false;
@@ -1556,9 +1630,10 @@ public sealed class Minimap : ModBase
         var rectangles = new via.gui.Rect[count];
         for (var index = 0; index < rectangles.Length; ++index)
         {
-            rectangles[index] = FindNamedPlayObject(
-                view,
-                $"{namePrefix}{index:00}")?.TryAs<via.gui.Rect>();
+            var name = $"{namePrefix}{index:00}";
+            rectangles[index] = FindNamedPlayObject(view, name)?.TryAs<via.gui.Rect>()
+                ?? throw new InvalidOperationException(
+                    $"The Minimap GUI resource is missing {name}.");
         }
 
         return rectangles;
@@ -1587,6 +1662,41 @@ public sealed class Minimap : ModBase
         }
 
         foreach (var rectangle in _cameraArrows)
+        {
+            yield return rectangle;
+        }
+
+        foreach (var rectangle in _wallMarkerOutlines)
+        {
+            yield return rectangle;
+        }
+
+        foreach (var rectangle in _wallMarkers)
+        {
+            yield return rectangle;
+        }
+
+        foreach (var rectangle in _chestMarkerOutlines)
+        {
+            yield return rectangle;
+        }
+
+        foreach (var rectangle in _chestMarkers)
+        {
+            yield return rectangle;
+        }
+
+        foreach (var rectangle in _chestMarkerLids)
+        {
+            yield return rectangle;
+        }
+
+        foreach (var rectangle in _footprintMarkerOutlines)
+        {
+            yield return rectangle;
+        }
+
+        foreach (var rectangle in _footprintMarkers)
         {
             yield return rectangle;
         }
@@ -1883,6 +1993,471 @@ public sealed class Minimap : ModBase
         return $"GUI/ui_texture/tex_map/tex_{name}_IMLM3.tex";
     }
 
+    private static void UpdateNativeMarkers(
+        app.GUIManager guiManager,
+        float playerX,
+        float playerZ,
+        float left,
+        float top,
+        float width,
+        float height,
+        float mapScale,
+        float mapRotation,
+        bool isCircle)
+    {
+        try
+        {
+            if (Environment.TickCount64 >= _nextMarkerRefreshTick)
+            {
+                RefreshMapObjectMarkers();
+                _nextMarkerRefreshTick =
+                    Environment.TickCount64 + MarkerRefreshMilliseconds;
+            }
+
+            var markerScale = Math.Clamp(
+                MathF.Min(width, height) / 280.0f,
+                0.5f,
+                1.0f);
+            var pixelsPerMeter = Math.Max(Instance._pixelsPerMeter.Value, 0.1f);
+            var mapSign = MathF.Sign(mapScale);
+            var cosine = MathF.Cos(mapRotation);
+            var sine = MathF.Sin(mapRotation);
+            if (Instance._showOniWalls.Value)
+            {
+                UpdateWallMarkers(
+                    playerX,
+                    playerZ,
+                    left,
+                    top,
+                    width,
+                    height,
+                    pixelsPerMeter,
+                    mapSign,
+                    cosine,
+                    sine,
+                    markerScale,
+                    isCircle);
+            }
+            else
+            {
+                SetVisible(_wallMarkerOutlines, false);
+                SetVisible(_wallMarkers, false);
+            }
+
+            if (Instance._showChests.Value)
+            {
+                UpdateChestMarkers(
+                    playerX,
+                    playerZ,
+                    left,
+                    top,
+                    width,
+                    height,
+                    pixelsPerMeter,
+                    mapSign,
+                    cosine,
+                    sine,
+                    markerScale,
+                    isCircle);
+            }
+            else
+            {
+                SetVisible(_chestMarkerOutlines, false);
+                SetVisible(_chestMarkers, false);
+                SetVisible(_chestMarkerLids, false);
+            }
+
+            if (Instance._showFootprints.Value)
+            {
+                UpdateFootprintMarkers(
+                    guiManager,
+                    playerX,
+                    playerZ,
+                    left,
+                    top,
+                    width,
+                    height,
+                    pixelsPerMeter,
+                    mapSign,
+                    cosine,
+                    sine,
+                    markerScale,
+                    isCircle);
+            }
+            else
+            {
+                SetVisible(_footprintMarkerOutlines, false);
+                SetVisible(_footprintMarkers, false);
+            }
+
+            Volatile.Write(ref _markerErrorReported, 0);
+        }
+        catch (Exception exception)
+        {
+            HideNativeMarkers();
+            if (Interlocked.Exchange(ref _markerErrorReported, 1) == 0)
+            {
+                Instance.Log(
+                    $"Map marker update failed; the base map remains active: {exception}",
+                    ModLogLevel.Error);
+            }
+        }
+    }
+
+    private static void RefreshMapObjectMarkers()
+    {
+        var environment = API.GetManagedSingletonT<app.EnvironmentManager>();
+        var infoManager = environment?.EnvInfoManager;
+        var packages = infoManager?.getAllMapObjectData();
+        if (!IsAlive(infoManager) || !IsAlive(packages))
+        {
+            return;
+        }
+
+        var walls = new List<MarkerPosition>();
+        var chests = new List<MarkerPosition>();
+        for (var packageIndex = 0;
+             packageIndex < packages.Count;
+             ++packageIndex)
+        {
+            var package = packages[packageIndex];
+            var objects = package?.getDisplayList();
+            if (!IsAlive(package) || !IsAlive(objects))
+            {
+                continue;
+            }
+
+            for (var objectIndex = 0; objectIndex < objects.Count; ++objectIndex)
+            {
+                var data = objects[objectIndex];
+                if (!IsAlive(data))
+                {
+                    continue;
+                }
+
+                var position = data.Position;
+                if (!float.IsFinite(position.x) || !float.IsFinite(position.z))
+                {
+                    continue;
+                }
+
+                switch (data.MapObjectType)
+                {
+                    case app.EnvDef.MAP_OBJECT_TYPE_Fixed.ARM_BREAK_WALL:
+                    case app.EnvDef.MAP_OBJECT_TYPE_Fixed.EYE_HIDE_WALL:
+                    case app.EnvDef.MAP_OBJECT_TYPE_Fixed.INVASION_WALL:
+                        walls.Add(new MarkerPosition(position.x, position.z));
+                        break;
+                    case app.EnvDef.MAP_OBJECT_TYPE_Fixed.SPECIAL_CHEST:
+                        chests.Add(new MarkerPosition(position.x, position.z));
+                        break;
+                }
+            }
+        }
+
+        WallPositions.Clear();
+        WallPositions.AddRange(walls);
+        ChestPositions.Clear();
+        ChestPositions.AddRange(chests);
+    }
+
+    private static void UpdateWallMarkers(
+        float playerX,
+        float playerZ,
+        float left,
+        float top,
+        float width,
+        float height,
+        float pixelsPerMeter,
+        float mapSign,
+        float cosine,
+        float sine,
+        float markerScale,
+        bool isCircle)
+    {
+        var markerSize = WallMarkerSize * markerScale;
+        var used = 0;
+        foreach (var marker in WallPositions)
+        {
+            if (used >= _wallMarkers.Length || !TryProjectMarker(
+                    marker,
+                    playerX,
+                    playerZ,
+                    left,
+                    top,
+                    width,
+                    height,
+                    pixelsPerMeter,
+                    mapSign,
+                    cosine,
+                    sine,
+                    markerSize,
+                    isCircle,
+                    out var x,
+                    out var y))
+            {
+                continue;
+            }
+
+            SetMarkerRect(
+                _wallMarkerOutlines[used],
+                x,
+                y,
+                markerSize + 4.0f * markerScale,
+                markerSize + 4.0f * markerScale,
+                45.0f);
+            SetMarkerRect(
+                _wallMarkers[used],
+                x,
+                y,
+                markerSize,
+                markerSize,
+                45.0f);
+            ++used;
+        }
+
+        HideUnused(_wallMarkerOutlines, used);
+        HideUnused(_wallMarkers, used);
+    }
+
+    private static void UpdateChestMarkers(
+        float playerX,
+        float playerZ,
+        float left,
+        float top,
+        float width,
+        float height,
+        float pixelsPerMeter,
+        float mapSign,
+        float cosine,
+        float sine,
+        float markerScale,
+        bool isCircle)
+    {
+        var markerWidth = ChestMarkerWidth * markerScale;
+        var markerHeight = ChestMarkerHeight * markerScale;
+        var used = 0;
+        foreach (var marker in ChestPositions)
+        {
+            if (used >= _chestMarkers.Length || !TryProjectMarker(
+                    marker,
+                    playerX,
+                    playerZ,
+                    left,
+                    top,
+                    width,
+                    height,
+                    pixelsPerMeter,
+                    mapSign,
+                    cosine,
+                    sine,
+                    MathF.Max(markerWidth, markerHeight),
+                    isCircle,
+                    out var x,
+                    out var y))
+            {
+                continue;
+            }
+
+            SetMarkerRect(
+                _chestMarkerOutlines[used],
+                x,
+                y,
+                markerWidth + 4.0f * markerScale,
+                markerHeight + 4.0f * markerScale,
+                0.0f);
+            SetMarkerRect(
+                _chestMarkers[used],
+                x,
+                y,
+                markerWidth,
+                markerHeight,
+                0.0f);
+            SetMarkerRect(
+                _chestMarkerLids[used],
+                x,
+                y - markerHeight * 0.16f,
+                markerWidth,
+                2.0f * markerScale,
+                0.0f);
+            ++used;
+        }
+
+        HideUnused(_chestMarkerOutlines, used);
+        HideUnused(_chestMarkers, used);
+        HideUnused(_chestMarkerLids, used);
+    }
+
+    private static void UpdateFootprintMarkers(
+        app.GUIManager guiManager,
+        float playerX,
+        float playerZ,
+        float left,
+        float top,
+        float width,
+        float height,
+        float pixelsPerMeter,
+        float mapSign,
+        float cosine,
+        float sine,
+        float markerScale,
+        bool isCircle)
+    {
+        var footprintModule = guiManager.getFootprintsModule();
+        var footprints = footprintModule?.Footprints;
+        if (!IsAlive(footprintModule) || !IsAlive(footprints))
+        {
+            SetVisible(_footprintMarkerOutlines, false);
+            SetVisible(_footprintMarkers, false);
+            return;
+        }
+
+        var markerWidth = FootprintMarkerWidth * markerScale;
+        var markerHeight = FootprintMarkerHeight * markerScale;
+        var used = 0;
+        for (var index = 0;
+             index < footprints.Count && used < _footprintMarkers.Length;
+             ++index)
+        {
+            var footprint = footprints[index];
+            if (!IsAlive(footprint) || !footprint.IsValid)
+            {
+                continue;
+            }
+
+            var position = footprint.Pos;
+            if (!TryProjectMarker(
+                    new MarkerPosition(position.x, position.z),
+                    playerX,
+                    playerZ,
+                    left,
+                    top,
+                    width,
+                    height,
+                    pixelsPerMeter,
+                    mapSign,
+                    cosine,
+                    sine,
+                    markerHeight,
+                    isCircle,
+                    out var x,
+                    out var y))
+            {
+                continue;
+            }
+
+            var rotation = index % 2 == 0 ? -22.0f : 22.0f;
+            SetMarkerRect(
+                _footprintMarkerOutlines[used],
+                x,
+                y,
+                markerWidth + 3.0f * markerScale,
+                markerHeight + 3.0f * markerScale,
+                rotation);
+            SetMarkerRect(
+                _footprintMarkers[used],
+                x,
+                y,
+                markerWidth,
+                markerHeight,
+                rotation);
+            ++used;
+        }
+
+        HideUnused(_footprintMarkerOutlines, used);
+        HideUnused(_footprintMarkers, used);
+    }
+
+    private static bool TryProjectMarker(
+        MarkerPosition marker,
+        float playerX,
+        float playerZ,
+        float left,
+        float top,
+        float width,
+        float height,
+        float pixelsPerMeter,
+        float mapSign,
+        float cosine,
+        float sine,
+        float markerRadius,
+        bool isCircle,
+        out float x,
+        out float y)
+    {
+        var centerX = left + width * 0.5f;
+        var centerY = top + height * 0.5f;
+        var sourceX = (marker.X - playerX) * pixelsPerMeter * mapSign;
+        var sourceY = (marker.Z - playerZ) * pixelsPerMeter * mapSign;
+        x = centerX + cosine * sourceX - sine * sourceY;
+        y = centerY + sine * sourceX + cosine * sourceY;
+        var radius = markerRadius * 0.5f;
+        if (!float.IsFinite(x) || !float.IsFinite(y) ||
+            x < left + radius || x > left + width - radius ||
+            y < top + radius || y > top + height - radius)
+        {
+            return false;
+        }
+
+        if (!isCircle)
+        {
+            return true;
+        }
+
+        var radiusX = width * 0.5f - radius;
+        var radiusY = height * 0.5f - radius;
+        if (radiusX <= 0.0f || radiusY <= 0.0f)
+        {
+            return false;
+        }
+
+        var normalizedX = (x - centerX) / radiusX;
+        var normalizedY = (y - centerY) / radiusY;
+        return normalizedX * normalizedX + normalizedY * normalizedY <= 1.0f;
+    }
+
+    private static void SetMarkerRect(
+        via.gui.Rect rectangle,
+        float centerX,
+        float centerY,
+        float width,
+        float height,
+        float rotationDegrees)
+    {
+        var position = rectangle.Position;
+        position.x = centerX;
+        position.y = centerY;
+        position.z = 0.0f;
+        rectangle.Position = position;
+        var size = rectangle.Size;
+        size.w = width;
+        size.h = height;
+        rectangle.Size = size;
+        var rotation = rectangle.Rotation;
+        rotation.z = rotationDegrees;
+        rectangle.Rotation = rotation;
+        rectangle.Visible = true;
+    }
+
+    private static void HideUnused(via.gui.Rect[] rectangles, int firstUnused)
+    {
+        for (var index = firstUnused; index < rectangles.Length; ++index)
+        {
+            rectangles[index].Visible = false;
+        }
+    }
+
+    private static void HideNativeMarkers()
+    {
+        SetVisible(_wallMarkerOutlines, false);
+        SetVisible(_wallMarkers, false);
+        SetVisible(_chestMarkerOutlines, false);
+        SetVisible(_chestMarkers, false);
+        SetVisible(_chestMarkerLids, false);
+        SetVisible(_footprintMarkerOutlines, false);
+        SetVisible(_footprintMarkers, false);
+    }
+
     private static void UpdateNativeOverlay(
         float left,
         float top,
@@ -2019,6 +2594,8 @@ public sealed class Minimap : ModBase
             directionY,
             rightX,
             rightY,
+            PlayerTipDistance + PlayerRearDistance,
+            PlayerHalfWidth,
             scale);
         SetArrowTriangle(
             _playerArrowOutlines,
@@ -2048,34 +2625,26 @@ public sealed class Minimap : ModBase
         var leftY = rearY + rightY * CameraHalfWidth * scale;
         var rightPointX = rearX - rightX * CameraHalfWidth * scale;
         var rightPointY = rearY - rightY * CameraHalfWidth * scale;
-        SetLine(
-            _cameraArrowOutlines[0],
+        SetFilledTriangle(
+            _cameraArrows,
+            rearX,
+            rearY,
+            directionX,
+            directionY,
+            rightX,
+            rightY,
+            CameraTipDistance - CameraRearDistance,
+            CameraHalfWidth,
+            scale);
+        SetArrowTriangle(
+            _cameraArrowOutlines,
             tipX,
             tipY,
             leftX,
             leftY,
-            CameraOutlineThickness * scale);
-        SetLine(
-            _cameraArrowOutlines[1],
-            tipX,
-            tipY,
             rightPointX,
             rightPointY,
             CameraOutlineThickness * scale);
-        SetLine(
-            _cameraArrows[0],
-            tipX,
-            tipY,
-            leftX,
-            leftY,
-            CameraArrowThickness * scale);
-        SetLine(
-            _cameraArrows[1],
-            tipX,
-            tipY,
-            rightPointX,
-            rightPointY,
-            CameraArrowThickness * scale);
     }
 
     private static void SetArrowTriangle(
@@ -2101,14 +2670,15 @@ public sealed class Minimap : ModBase
         float directionY,
         float rightX,
         float rightY,
+        float length,
+        float maximumHalfWidth,
         float scale)
     {
-        var length = PlayerTipDistance + PlayerRearDistance;
-        var partHeight = (length / parts.Length + PlayerFillOverlap) * scale;
+        var partHeight = (length / parts.Length + TriangleFillOverlap) * scale;
         for (var index = 0; index < parts.Length; ++index)
         {
             var centerRatio = (index + 0.5f) / parts.Length;
-            var halfWidth = PlayerHalfWidth *
+            var halfWidth = maximumHalfWidth *
                 (1.0f - (float)index / parts.Length) * scale;
             var centerX = rearX + directionX * length * centerRatio * scale;
             var centerY = rearY + directionY * length * centerRatio * scale;
@@ -2198,6 +2768,9 @@ public sealed class Minimap : ModBase
         ClearTileTextures(Tiles);
         ReleaseTileResources(Tiles);
         Tiles.Clear();
+        WallPositions.Clear();
+        ChestPositions.Clear();
+        _nextMarkerRefreshTick = 0;
         _map = null;
     }
 
@@ -2240,6 +2813,13 @@ public sealed class Minimap : ModBase
         _rectangleBorders = Array.Empty<via.gui.Rect>();
         _cameraArrows = Array.Empty<via.gui.Rect>();
         _cameraArrowOutlines = Array.Empty<via.gui.Rect>();
+        _wallMarkers = Array.Empty<via.gui.Rect>();
+        _wallMarkerOutlines = Array.Empty<via.gui.Rect>();
+        _chestMarkers = Array.Empty<via.gui.Rect>();
+        _chestMarkerOutlines = Array.Empty<via.gui.Rect>();
+        _chestMarkerLids = Array.Empty<via.gui.Rect>();
+        _footprintMarkers = Array.Empty<via.gui.Rect>();
+        _footprintMarkerOutlines = Array.Empty<via.gui.Rect>();
         _playerArrows = Array.Empty<via.gui.Rect>();
         _playerArrowOutlines = Array.Empty<via.gui.Rect>();
         _circleBorder = null;
@@ -2361,6 +2941,18 @@ public sealed class Minimap : ModBase
         public int Row { get; }
         public int Column { get; }
         public string ResourcePath { get; }
+    }
+
+    private readonly struct MarkerPosition
+    {
+        public MarkerPosition(float x, float z)
+        {
+            X = x;
+            Z = z;
+        }
+
+        public float X { get; }
+        public float Z { get; }
     }
 
     private sealed class MapTile
