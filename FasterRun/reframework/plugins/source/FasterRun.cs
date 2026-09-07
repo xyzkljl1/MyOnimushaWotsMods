@@ -391,7 +391,7 @@ public sealed class FasterRun : ModBase
     private readonly ModConfig<float> _runSpeed;
     private readonly ModConfig<float> _dashSpeed;
 
-    private FasterRun() : base("FasterRun", "1.0")
+    private FasterRun() : base("FasterRun", "1.1")
     {
         _runSpeed = AddFloatConfig(
             "Run speed",
@@ -498,7 +498,7 @@ public sealed class FasterRun : ModBase
             return;
         }
 
-        var speed = Instance.GetConfiguredSpeed(actionObject, action);
+        var speed = Instance.GetConfiguredSpeed(actionObject);
         if (!speed.HasValue)
         {
             return;
@@ -516,26 +516,22 @@ public sealed class FasterRun : ModBase
         action._OverrideMotionSpeed = speed.Value;
     }
 
-    private float? GetConfiguredSpeed(
-        ManagedObject actionObject,
-        app.PlayerActionBase.cPlayerActionBase action)
+    private float? GetConfiguredSpeed(ManagedObject actionObject)
     {
         var typeName = (actionObject as IObject)?.GetTypeDefinition()?.FullName;
-        if (action._RuntimeMoveType == app.PlayerDef.MOVE_TYPE.DASH ||
-            action._MoveType == app.PlayerDef.MOVE_TYPE.DASH ||
-            typeName?.EndsWith(".cDashStart", StringComparison.Ordinal) == true)
+        if (typeName is null)
         {
-            return _dashSpeed.Value;
+            return null;
         }
 
-        if (action._RuntimeMoveType == app.PlayerDef.MOVE_TYPE.RUN ||
-            action._MoveType == app.PlayerDef.MOVE_TYPE.RUN ||
-            typeName?.EndsWith(".cRunStart", StringComparison.Ordinal) == true)
+        var separator = typeName.LastIndexOf('.');
+        var actionName = separator >= 0 ? typeName[(separator + 1)..] : typeName;
+        return actionName switch
         {
-            return _runSpeed.Value;
-        }
-
-        return null;
+            "cDash" or "cDashStart" or "cDashTurn" => _dashSpeed.Value,
+            "cRun" or "cRunStart" or "cRunTurn" => _runSpeed.Value,
+            _ => null,
+        };
     }
 
     private static void RestoreModifiedAction()
