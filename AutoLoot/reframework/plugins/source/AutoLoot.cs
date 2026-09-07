@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Numerics;
 using REFrameworkNET;
 using REFrameworkNET.Attributes;
 using REFrameworkNET.Callbacks;
@@ -452,7 +453,7 @@ public sealed class AutoLoot : ModBase
     private readonly ModConfig<float> _collectionDistance;
     private readonly HistoricalStageItemSaveRepair _stageItemSaveRepair;
 
-    private AutoLoot() : base("AutoLoot", "1.2")
+    private AutoLoot() : base("AutoLoot", "1.3")
     {
         _stageItemSaveRepair = new HistoricalStageItemSaveRepair(this);
         _gatheringItems = AddBoolConfig(
@@ -508,7 +509,12 @@ public sealed class AutoLoot : ModBase
             }
 
             var now = via.Application.UpTimeSecond;
-            var playerPosition = playerTransform.Position;
+            Vector3 playerPosition;
+            {
+                var position = playerTransform.Position;
+                playerPosition = new Vector3(position.x, position.y, position.z);
+            }
+
             var collectionDistance = Instance._collectionDistance.Value;
             var collectionDistanceSquared = collectionDistance * collectionDistance;
             foreach (var address in ProcessingItems)
@@ -627,7 +633,7 @@ public sealed class AutoLoot : ModBase
     private void TryCollect(
         ulong address,
         float now,
-        via.vec3 playerPosition,
+        Vector3 playerPosition,
         float collectionDistanceSquared)
     {
         var managedItem = ManagedObject.IsManagedObject(address)
@@ -644,10 +650,20 @@ public sealed class AutoLoot : ModBase
         }
 
         var itemTransform = item.GameObject?.Transform;
-        if (itemTransform is null ||
-            !IsWithinDistance(
+        if (itemTransform is null)
+        {
+            return;
+        }
+
+        Vector3 itemPosition;
+        {
+            var position = itemTransform.Position;
+            itemPosition = new Vector3(position.x, position.y, position.z);
+        }
+
+        if (!IsWithinDistance(
                 playerPosition,
-                itemTransform.Position,
+                itemPosition,
                 collectionDistanceSquared) ||
             LastAttempts.TryGetValue(address, out var attemptedAt) &&
             now - attemptedAt < RetryDelaySeconds)
@@ -722,15 +738,10 @@ public sealed class AutoLoot : ModBase
     }
 
     private static bool IsWithinDistance(
-        via.vec3 playerPosition,
-        via.vec3 itemPosition,
-        float maximumDistanceSquared)
-    {
-        var x = itemPosition.x - playerPosition.x;
-        var y = itemPosition.y - playerPosition.y;
-        var z = itemPosition.z - playerPosition.z;
-        return x * x + y * y + z * z <= maximumDistanceSquared;
-    }
+        Vector3 playerPosition,
+        Vector3 itemPosition,
+        float maximumDistanceSquared) =>
+        Vector3.DistanceSquared(playerPosition, itemPosition) <= maximumDistanceSquared;
 
     private static bool HasValidDialogue(app.Gm002_009 chest)
     {
