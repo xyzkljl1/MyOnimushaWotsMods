@@ -1387,9 +1387,34 @@ public sealed class Minimap : ModBase
         }
 
         var textureRows = area?.Textures;
-        if (!IsAlive(area) || !IsAlive(textureRows))
+        var areaFields = area?.AreaFields;
+        if (!IsAlive(area) || !IsAlive(textureRows) || !IsAlive(areaFields))
         {
             return false;
+        }
+
+        // Match the native map's AreaID/FieldOrder pairs, including INVALID floors.
+        // Copy values so this definition does not retain native user-data objects.
+        var markerFields = new Dictionary<
+            app.EnvDef.AreaID_Fixed, HashSet<app.EnvDef.FIELD_ORDER_Fixed>>();
+        for (var index = 0; index < areaFields.Count; ++index)
+        {
+            var field = areaFields[index];
+            var areaId = field?.AreaID;
+            var floor = field?.Floor;
+            if (!IsAlive(field) || !IsAlive(areaId) || !IsAlive(floor))
+            {
+                continue;
+            }
+
+            var fixedArea = (app.EnvDef.AreaID_Fixed)areaId.Value;
+            if (!markerFields.TryGetValue(fixedArea, out var floors))
+            {
+                floors = new HashSet<app.EnvDef.FIELD_ORDER_Fixed>();
+                markerFields.Add(fixedArea, floors);
+            }
+
+            floors.Add((app.EnvDef.FIELD_ORDER_Fixed)floor.Value);
         }
 
         var definitions = new List<TileDefinition>();
@@ -1436,7 +1461,8 @@ public sealed class Minimap : ModBase
             area.IsFlipSideUp,
             textureRows.Count,
             columns,
-            definitions.ToArray());
+            definitions.ToArray(),
+            markerFields);
         return true;
     }
 
@@ -2161,6 +2187,14 @@ public sealed class Minimap : ModBase
 
     private static void RefreshMapObjectMarkers()
     {
+        // Unavailable data or a failed refresh must not leave old markers visible.
+        ClearMapObjectPositions();
+        var map = _map;
+        if (map is null || map.AreaFields.Count == 0)
+        {
+            return;
+        }
+
         var environment = API.GetManagedSingletonT<app.EnvironmentManager>();
         var infoManager = environment?.EnvInfoManager;
         var packages = infoManager?.getAllMapObjectData();
@@ -2177,8 +2211,14 @@ public sealed class Minimap : ModBase
              ++packageIndex)
         {
             var package = packages[packageIndex];
-            var objects = package?.getDisplayList();
-            if (!IsAlive(package) || !IsAlive(objects))
+            if (!IsAlive(package) ||
+                !map.AreaFields.TryGetValue(package.AreaID, out var floors))
+            {
+                continue;
+            }
+
+            var objects = package.getDisplayList();
+            if (!IsAlive(objects))
             {
                 continue;
             }
@@ -2186,7 +2226,7 @@ public sealed class Minimap : ModBase
             for (var objectIndex = 0; objectIndex < objects.Count; ++objectIndex)
             {
                 var data = objects[objectIndex];
-                if (!IsAlive(data))
+                if (!IsAlive(data) || !floors.Contains(data.FieldOrder))
                 {
                     continue;
                 }
@@ -2233,12 +2273,16 @@ public sealed class Minimap : ModBase
             }
         }
 
-        WallPositions.Clear();
         WallPositions.AddRange(walls);
-        ChestPositions.Clear();
         ChestPositions.AddRange(chests);
-        EntrancePositions.Clear();
         EntrancePositions.AddRange(entrances);
+    }
+
+    private static void ClearMapObjectPositions()
+    {
+        WallPositions.Clear();
+        ChestPositions.Clear();
+        EntrancePositions.Clear();
     }
 
     private static void UpdateMapObjectMarkers(
@@ -2728,10 +2772,8 @@ public sealed class Minimap : ModBase
         ClearTileTextures(Tiles);
         ReleaseTileResources(Tiles);
         Tiles.Clear();
-        WallPositions.Clear();
-        ChestPositions.Clear();
+        ClearMapObjectPositions();
         _nextMarkerRefreshTick = 0;
-        EntrancePositions.Clear();
         _map = null;
     }
 
@@ -2877,7 +2919,8 @@ public sealed class Minimap : ModBase
             bool isFlipSideUp,
             int rows,
             int columns,
-            TileDefinition[] tiles)
+            TileDefinition[] tiles,
+            Dictionary<app.EnvDef.AreaID_Fixed, HashSet<app.EnvDef.FIELD_ORDER_Fixed>> areaFields)
         {
             StageKey = stageKey;
             RootX = rootX;
@@ -2886,6 +2929,7 @@ public sealed class Minimap : ModBase
             Rows = rows;
             Columns = columns;
             Tiles = tiles;
+            AreaFields = areaFields;
         }
 
         public int StageKey { get; }
@@ -2895,6 +2939,8 @@ public sealed class Minimap : ModBase
         public int Rows { get; }
         public int Columns { get; }
         public TileDefinition[] Tiles { get; }
+        public Dictionary<app.EnvDef.AreaID_Fixed, HashSet<app.EnvDef.FIELD_ORDER_Fixed>>
+            AreaFields { get; }
     }
 
     private readonly struct TileDefinition
