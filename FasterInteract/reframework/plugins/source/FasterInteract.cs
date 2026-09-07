@@ -560,6 +560,7 @@ public sealed class FasterInteract : ModBase
         None,
         OniWall,
         Door,
+        Ladder,
     }
 
     private static readonly FasterInteract Instance = new();
@@ -575,6 +576,8 @@ public sealed class FasterInteract : ModBase
     private static ulong _updatingElevator;
     [ThreadStatic]
     private static float _originalElevatorMoveSpeed;
+    [ThreadStatic]
+    private static ulong _gettingLadderMoveSpeed;
     private static ulong _modifiedAction;
     private static ulong _acceleratedDoor;
     private static InteractionFeature _activeFeature;
@@ -585,8 +588,9 @@ public sealed class FasterInteract : ModBase
     private readonly ModConfig<bool> _oniWallEnabled;
     private readonly ModConfig<bool> _doorEnabled;
     private readonly ModConfig<bool> _elevatorDescentEnabled;
+    private readonly ModConfig<bool> _ladderEnabled;
 
-    private FasterInteract() : base("FasterInteract", "1.0")
+    private FasterInteract() : base("FasterInteract", "1.1")
     {
         _interactionSpeed = AddFloatConfig(
             "Interaction speed",
@@ -607,6 +611,10 @@ public sealed class FasterInteract : ModBase
             "Enable elevator descent acceleration",
             true,
             key: "ElevatorDescentEnabled");
+        _ladderEnabled = AddBoolConfig(
+            "Enable ladder acceleration",
+            true,
+            key: "LadderEnabled");
     }
 
     [PluginEntryPoint]
@@ -623,6 +631,7 @@ public sealed class FasterInteract : ModBase
         LastElevatorPositions.Clear();
         _enteringPlayerAction = 0;
         _updatingElevator = 0;
+        _gettingLadderMoveSpeed = 0;
         Instance.UnloadMod();
     }
 
@@ -806,6 +815,69 @@ public sealed class FasterInteract : ModBase
     }
 
     [MethodHook(
+        typeof(app.PlayerCommonAction.cLadderActionBase),
+        "detailUpdate",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeLadderUpdate(Span<ulong> args)
+    {
+        try
+        {
+            if (args.Length > 1)
+            {
+                ApplyPlayerActionSpeed(args[1], applyMotionLayers: true);
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce("Failed to update ladder speed", exception);
+        }
+
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.PlayerCommonAction.cLadderClimbLoop),
+        "getMoveSpeed",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeGetLadderMoveSpeed(Span<ulong> args)
+    {
+        _gettingLadderMoveSpeed = args.Length > 1 ? args[1] : 0;
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.PlayerCommonAction.cLadderClimbLoop),
+        "getMoveSpeed",
+        MethodHookType.Post)]
+    public static void AfterGetLadderMoveSpeed(ref ulong returnValue)
+    {
+        var actionAddress = _gettingLadderMoveSpeed;
+        _gettingLadderMoveSpeed = 0;
+        if (actionAddress != _modifiedAction ||
+            _activeFeature != InteractionFeature.Ladder ||
+            !Instance._ladderEnabled.Value)
+        {
+            return;
+        }
+
+        try
+        {
+            var moveSpeed = BitConverter.UInt32BitsToSingle((uint)returnValue);
+            if (float.IsFinite(moveSpeed) && moveSpeed > 0.0f)
+            {
+                var adjustedSpeed = moveSpeed * GetInteractionSpeed();
+                returnValue =
+                    (returnValue & ~((ulong)uint.MaxValue)) |
+                    BitConverter.SingleToUInt32Bits(adjustedSpeed);
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce("Failed to adjust ladder movement", exception);
+        }
+    }
+
+    [MethodHook(
         typeof(app.PlayerActionBase.cPlayerActionBase),
         "doExit",
         MethodHookType.Pre)]
@@ -897,6 +969,11 @@ public sealed class FasterInteract : ModBase
         gimmickAddress = 0;
         var typeName = (actionObject as IObject)
             ?.GetTypeDefinition()?.FullName;
+        if (Instance._ladderEnabled.Value && IsAcceleratedLadderAction(typeName))
+        {
+            return InteractionFeature.Ladder;
+        }
+
         if (IsDemonTendonAction(typeName))
         {
             return Instance._oniWallEnabled.Value
@@ -930,8 +1007,14 @@ public sealed class FasterInteract : ModBase
         {
             InteractionFeature.OniWall => Instance._oniWallEnabled.Value,
             InteractionFeature.Door => Instance._doorEnabled.Value,
+            InteractionFeature.Ladder => Instance._ladderEnabled.Value,
             _ => false,
         };
+
+    private static bool IsAcceleratedLadderAction(string typeName) =>
+        typeName?.Contains(".cLadderClimb", StringComparison.Ordinal) == true &&
+        (typeName.Contains("Start", StringComparison.Ordinal) ||
+         typeName.Contains("Loop", StringComparison.Ordinal));
 
     private static bool IsDemonTendonAction(string typeName) =>
         typeName == "app.PlayerBasicAction.cDemonTendonInterruptionStart" ||
