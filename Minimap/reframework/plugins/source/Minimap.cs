@@ -927,6 +927,7 @@ public sealed class Minimap : ModBase
     private const string WindowName = "Minimap_Window";
     private const string GroupName = "Minimap_Group";
     private const string OverlayGroupName = "Minimap_OverlayGroup";
+    private const string PlayerGroupName = "Minimap_PlayerGroup";
     private const string CircleMaskName = "Minimap_CircleMask";
     private const string RectangleMaskName = "Minimap_RectangleMask";
     private const string CircleBorderName = "Minimap_CircleBorder";
@@ -949,6 +950,7 @@ public sealed class Minimap : ModBase
     private const int FootprintMarkerCount = 16;
     private const ushort MapDrawPriority = ushort.MaxValue - 1;
     private const ushort OverlayDrawPriority = ushort.MaxValue;
+    private const ushort PlayerDrawPriority = ushort.MaxValue;
     private const float BorderThickness = 1.5f;
     private const float CameraTipDistance = 42.0f;
     private const float CameraRearDistance = 25.0f;
@@ -1527,6 +1529,8 @@ public sealed class Minimap : ModBase
         _rectangleMask = FindNamedPlayObject(view, RectangleMaskName)
             ?.TryAs<via.gui.Texture>();
         var borders = FindRects(view, BorderNamePrefix, 4);
+        var playerGroup = FindNamedPlayObject(view, PlayerGroupName)
+            ?.TryAs<via.gui.Panel>();
         var playerMarker = FindNamedPlayObject(view, $"{PlayerMarkerPrefix}00")
             ?.TryAs<via.gui.Texture>();
         var cameraArrows = FindRects(
@@ -1550,7 +1554,7 @@ public sealed class Minimap : ModBase
             !IsAlive(_circleMask) || !IsAlive(_circleBorder) ||
             !IsAlive(_rectangleMask) ||
             Array.Exists(borders, border => !IsAlive(border)) ||
-            !IsAlive(playerMarker) ||
+            !IsAlive(playerGroup) || !IsAlive(playerMarker) ||
             Array.Exists(cameraArrows, part => !IsAlive(part)) ||
             Array.Exists(slots, slot => !IsAlive(slot)))
         {
@@ -1558,7 +1562,6 @@ public sealed class Minimap : ModBase
                 "The Minimap GUI resource does not contain the expected named nodes.");
         }
 
-        _tileSlots = slots;
         _rectangleBorders = borders;
         _playerMarker = playerMarker;
         _cameraArrows = cameraArrows;
@@ -1579,6 +1582,9 @@ public sealed class Minimap : ModBase
         _overlayGroup.Interactive = false;
         _overlayGroup.MaskMode = via.gui.MaskMode.Disable;
         _overlayGroup.Priority = OverlayDrawPriority;
+
+        // Priorities sort siblings; raise the group above every other icon group.
+        playerGroup.Priority = PlayerDrawPriority;
 
         _circleMask.Visible = false;
         _circleMask.HitVisible = false;
@@ -1636,7 +1642,7 @@ public sealed class Minimap : ModBase
             $"entrances={_entranceMarkers.Length}/{EntranceMarkerCount}, " +
             $"footprints={_footprintMarkers.Length}/{FootprintMarkerCount}.");
 
-        foreach (var slot in _tileSlots)
+        foreach (var slot in slots)
         {
             slot.Visible = false;
             slot.HitVisible = false;
@@ -1645,6 +1651,9 @@ public sealed class Minimap : ModBase
             slot.ControlPoint = via.gui.ControlPoint.CenterCenter;
             slot.MaskType = via.gui.MaskType.Target;
         }
+
+        // Publish readiness only after every node has been configured successfully.
+        _tileSlots = slots;
     }
 
     private static void ConfigureMarkerTexture(via.gui.Texture texture)
@@ -2262,7 +2271,10 @@ public sealed class Minimap : ModBase
             }
 
             var texture = textures[used];
-            texture.UVPatternNo = marker.IconPatternNo;
+            if (texture.UVPatternNo != marker.IconPatternNo)
+            {
+                texture.UVPatternNo = marker.IconPatternNo;
+            }
             SetMarkerTexture(
                 texture,
                 x,
