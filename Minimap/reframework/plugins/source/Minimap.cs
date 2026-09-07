@@ -922,7 +922,7 @@ public sealed class Minimap : ModBase
     private const int TilePixels = 2048;
     private const float WorldToMapPixels = 6.4f;
     private const int TileSlotCount = 16;
-    private const string GuiResourcePath = "GUI/Minimap/MinimapGrouped.gui";
+    private const string GuiResourcePath = "GUI/Minimap/MinimapGroupedIcons.gui";
     private const string GuiGameObjectName = "Minimap_GUI";
     private const string WindowName = "Minimap_Window";
     private const string GroupName = "Minimap_Group";
@@ -937,6 +937,9 @@ public sealed class Minimap : ModBase
     private const string WallMarkerPrefix = "Minimap_WallMarker_";
     private const string ChestMarkerPrefix = "Minimap_ChestMarker_";
     private const string EntranceMarkerPrefix = "Minimap_EntranceMarker_";
+    private const string LadderMarkerPrefix = "Minimap_LadderMarker_";
+    private const string CollectibleMarkerPrefix = "Minimap_CollectibleMarker_";
+    private const string MissionMarkerPrefix = "Minimap_MissionMarker_";
     private const string FootprintMarkerPrefix = "Minimap_FootprintMarker_";
     private const string TileNamePrefix = "Minimap_Tile_";
     private const long RetryDelayMilliseconds = 1000;
@@ -947,6 +950,10 @@ public sealed class Minimap : ModBase
     private const int WallMarkerCount = 12;
     private const int ChestMarkerCount = 16;
     private const int EntranceMarkerCount = 16;
+    private const int LadderMarkerCount = 32;
+    private const int CollectibleMarkerCount = 32;
+    private const int MissionMarkerCount = 40;
+    private const int MaxMissionBeaconsToInspect = 512;
     private const int FootprintMarkerCount = 16;
     private const ushort MapDrawPriority = ushort.MaxValue - 1;
     private const ushort OverlayDrawPriority = ushort.MaxValue;
@@ -961,6 +968,9 @@ public sealed class Minimap : ModBase
     private const float WallMarkerSize = 48.0f;
     private const float ChestMarkerSize = 48.0f;
     private const float EntranceMarkerSize = 48.0f;
+    private const float LadderMarkerSize = 48.0f;
+    private const float CollectibleMarkerSize = 48.0f;
+    private const float MissionMarkerSize = 48.0f;
     private const float FootprintMarkerSize = 9.0f;
     private const float MaximumOffset = 16383.0f;
 
@@ -970,6 +980,31 @@ public sealed class Minimap : ModBase
     private const uint InvasionWallIconPattern = 8;
     private const uint ChestIconPattern = 2;
     private const uint EntranceIconPattern = 7;
+    private const uint LadderIconPattern = 9;
+
+    // lib000122's native map-object animation: SUB_MISTERY frame 4 and
+    // MEDICINE_BAG_MATERIAL frame 24 use these uvs000120 patterns.
+    private const uint SubMysteryIconPattern = 2;
+    private const uint MedicineBagMaterialIconPattern = 24;
+
+    // lib000121 uses uvs000121: sequence 0 for active missions, sequence 2
+    // for prefaces; patterns 0/1/2 are main/character/side missions.
+    private const uint MissionPrefaceSequence = 2;
+    private const uint MainMissionIconPattern = 0;
+    private const uint CharacterMissionIconPattern = 1;
+    private const uint SideMissionIconPattern = 2;
+
+    // Native ColorPreset values from lib000121/122. Keep color selection
+    // separate from UV patterns: the same atlas can contain both categories.
+    private const string MapSymbolColorPresetId = "1e50f708-849d-48fe-95bd-0919f7287e35";
+    private const string MissionColorPresetId = "a2f047c3-da95-4bd3-ad51-10bcba41297f";
+
+    private enum MarkerColor
+    {
+        Original,
+        MapSymbol,
+        Mission,
+    }
 
     private const int MapFixed = 0;
     private const int PlayerFixed = 1;
@@ -993,6 +1028,11 @@ public sealed class Minimap : ModBase
     private static readonly List<MarkerPosition> WallPositions = new();
     private static readonly List<MarkerPosition> ChestPositions = new();
     private static readonly List<MarkerPosition> EntrancePositions = new();
+    private static readonly List<MarkerPosition> LadderPositions = new();
+    private static readonly List<MarkerPosition> CollectiblePositions = new();
+    private static readonly List<MarkerPosition> MissionPositions = new();
+    private static readonly Dictionary<ulong, MarkerColor> MarkerColors = new();
+    private static _System.Guid[] _markerColorPresets = Array.Empty<_System.Guid>();
 
     private readonly ModConfig<ModHotkey> _toggleHotkey;
     private readonly ModConfig<int> _orientation;
@@ -1005,6 +1045,9 @@ public sealed class Minimap : ModBase
     private readonly ModConfig<bool> _showOniWalls;
     private readonly ModConfig<bool> _showChests;
     private readonly ModConfig<bool> _showEntrances;
+    private readonly ModConfig<bool> _showLadders;
+    private readonly ModConfig<bool> _showCollectibles;
+    private readonly ModConfig<bool> _showMissions;
     private readonly ModConfig<bool> _showFootprints;
     private bool _isVisible = true;
 
@@ -1026,6 +1069,9 @@ public sealed class Minimap : ModBase
     private static via.gui.Texture[] _wallMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _chestMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _entranceMarkers = Array.Empty<via.gui.Texture>();
+    private static via.gui.Texture[] _ladderMarkers = Array.Empty<via.gui.Texture>();
+    private static via.gui.Texture[] _collectibleMarkers = Array.Empty<via.gui.Texture>();
+    private static via.gui.Texture[] _missionMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _footprintMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _tileSlots = Array.Empty<via.gui.Texture>();
     private static long _guiLoadStartedAt;
@@ -1034,6 +1080,7 @@ public sealed class Minimap : ModBase
     private static long _nextMarkerRefreshTick;
     private static int _errorReported;
     private static int _markerErrorReported;
+    private static int _missionErrorReported;
     private static int _cleanupErrorReported;
 
     private Minimap() : base("Minimap", "1.1")
@@ -1058,6 +1105,9 @@ public sealed class Minimap : ModBase
         _showOniWalls = AddBoolConfig("Show Oni walls", true);
         _showChests = AddBoolConfig("Show chests", true);
         _showEntrances = AddBoolConfig("Show area entrances/exits", true);
+        _showLadders = AddBoolConfig("Show ladders", true);
+        _showCollectibles = AddBoolConfig("Show collectibles", true);
+        _showMissions = AddBoolConfig("Show missions", true);
         _showFootprints = AddBoolConfig("Show footprints", true);
     }
 
@@ -1077,6 +1127,7 @@ public sealed class Minimap : ModBase
         _nextMarkerRefreshTick = 0;
         _errorReported = 0;
         _markerErrorReported = 0;
+        _missionErrorReported = 0;
         _cleanupErrorReported = 0;
         Instance.UnloadMod();
         Instance.Log("Unloaded and removed native map textures.");
@@ -1585,6 +1636,12 @@ public sealed class Minimap : ModBase
             view, ChestMarkerPrefix, ChestMarkerCount);
         var entranceMarkers = FindOptionalTextures(
             view, EntranceMarkerPrefix, EntranceMarkerCount);
+        var ladderMarkers = FindOptionalTextures(
+            view, LadderMarkerPrefix, LadderMarkerCount);
+        var collectibleMarkers = FindOptionalTextures(
+            view, CollectibleMarkerPrefix, CollectibleMarkerCount);
+        var missionMarkers = FindOptionalTextures(
+            view, MissionMarkerPrefix, MissionMarkerCount);
         var footprintMarkers = FindOptionalTextures(
             view, FootprintMarkerPrefix, FootprintMarkerCount);
         var slots = new via.gui.Texture[TileSlotCount];
@@ -1612,6 +1669,9 @@ public sealed class Minimap : ModBase
         _wallMarkers = wallMarkers;
         _chestMarkers = chestMarkers;
         _entranceMarkers = entranceMarkers;
+        _ladderMarkers = ladderMarkers;
+        _collectibleMarkers = collectibleMarkers;
+        _missionMarkers = missionMarkers;
         _footprintMarkers = footprintMarkers;
         _guiWindow.ResolutionAdjust = false;
         _guiWindow.SafeAreaAdjust = false;
@@ -1655,6 +1715,13 @@ public sealed class Minimap : ModBase
             rectangle.MaskType = via.gui.MaskType.NonTarget;
         }
 
+        _markerColorPresets = new[]
+        {
+            _System.Guid.Empty,
+            _System.Guid.Parse(MapSymbolColorPresetId),
+            _System.Guid.Parse(MissionColorPresetId),
+        };
+        MarkerColors.Clear();
         ConfigureMarkerTexture(_playerMarker);
 
         foreach (var textures in new[]
@@ -1662,6 +1729,9 @@ public sealed class Minimap : ModBase
                      _wallMarkers,
                      _chestMarkers,
                      _entranceMarkers,
+                     _ladderMarkers,
+                     _collectibleMarkers,
+                     _missionMarkers,
                      _footprintMarkers,
                  })
         {
@@ -1684,6 +1754,9 @@ public sealed class Minimap : ModBase
             $"walls={_wallMarkers.Length}/{WallMarkerCount}, " +
             $"chests={_chestMarkers.Length}/{ChestMarkerCount}, " +
             $"entrances={_entranceMarkers.Length}/{EntranceMarkerCount}, " +
+            $"ladders={_ladderMarkers.Length}/{LadderMarkerCount}, " +
+            $"collectibles={_collectibleMarkers.Length}/{CollectibleMarkerCount}, " +
+            $"missions={_missionMarkers.Length}/{MissionMarkerCount}, " +
             $"footprints={_footprintMarkers.Length}/{FootprintMarkerCount}.");
 
         foreach (var slot in slots)
@@ -2065,6 +2138,7 @@ public sealed class Minimap : ModBase
             if (Environment.TickCount64 >= _nextMarkerRefreshTick)
             {
                 RefreshMapObjectMarkers();
+                RefreshMissionMarkers();
                 _nextMarkerRefreshTick =
                     Environment.TickCount64 + MarkerRefreshMilliseconds;
             }
@@ -2149,6 +2223,78 @@ public sealed class Minimap : ModBase
                 SetVisible(_entranceMarkers, false);
             }
 
+            if (Instance._showLadders.Value)
+            {
+                UpdateMapObjectMarkers(
+                    LadderPositions,
+                    _ladderMarkers,
+                    LadderMarkerSize,
+                    playerX,
+                    playerZ,
+                    left,
+                    top,
+                    width,
+                    height,
+                    pixelsPerMeter,
+                    mapSign,
+                    cosine,
+                    sine,
+                    markerScale,
+                    isCircle);
+            }
+            else
+            {
+                SetVisible(_ladderMarkers, false);
+            }
+
+            if (Instance._showCollectibles.Value)
+            {
+                UpdateMapObjectMarkers(
+                    CollectiblePositions,
+                    _collectibleMarkers,
+                    CollectibleMarkerSize,
+                    playerX,
+                    playerZ,
+                    left,
+                    top,
+                    width,
+                    height,
+                    pixelsPerMeter,
+                    mapSign,
+                    cosine,
+                    sine,
+                    markerScale,
+                    isCircle);
+            }
+            else
+            {
+                SetVisible(_collectibleMarkers, false);
+            }
+
+            if (Instance._showMissions.Value)
+            {
+                UpdateMapObjectMarkers(
+                    MissionPositions,
+                    _missionMarkers,
+                    MissionMarkerSize,
+                    playerX,
+                    playerZ,
+                    left,
+                    top,
+                    width,
+                    height,
+                    pixelsPerMeter,
+                    mapSign,
+                    cosine,
+                    sine,
+                    markerScale,
+                    isCircle);
+            }
+            else
+            {
+                SetVisible(_missionMarkers, false);
+            }
+
             if (Instance._showFootprints.Value)
             {
                 UpdateFootprintMarkers(
@@ -2206,6 +2352,8 @@ public sealed class Minimap : ModBase
         var walls = new List<MarkerPosition>();
         var chests = new List<MarkerPosition>();
         var entrances = new List<MarkerPosition>();
+        var ladders = new List<MarkerPosition>();
+        var collectibles = new List<MarkerPosition>();
         for (var packageIndex = 0;
              packageIndex < packages.Count;
              ++packageIndex)
@@ -2263,6 +2411,20 @@ public sealed class Minimap : ModBase
                             position.z,
                             ChestIconPattern));
                         break;
+                    case app.EnvDef.MAP_OBJECT_TYPE_Fixed.LADDER:
+                        ladders.Add(new MarkerPosition(
+                            position.x, position.z, LadderIconPattern));
+                        break;
+                    case app.EnvDef.MAP_OBJECT_TYPE_Fixed.SUB_MISTERY:
+                        collectibles.Add(new MarkerPosition(
+                            position.x, position.z, SubMysteryIconPattern,
+                            color: MarkerColor.MapSymbol));
+                        break;
+                    case app.EnvDef.MAP_OBJECT_TYPE_Fixed.MEDICINE_BAG_MATERIAL:
+                        collectibles.Add(new MarkerPosition(
+                            position.x, position.z, MedicineBagMaterialIconPattern,
+                            color: MarkerColor.Mission));
+                        break;
                     case app.EnvDef.MAP_OBJECT_TYPE_Fixed.STAGE_TRANSITION_POINT:
                         entrances.Add(new MarkerPosition(
                             position.x,
@@ -2276,6 +2438,8 @@ public sealed class Minimap : ModBase
         WallPositions.AddRange(walls);
         ChestPositions.AddRange(chests);
         EntrancePositions.AddRange(entrances);
+        LadderPositions.AddRange(ladders);
+        CollectiblePositions.AddRange(collectibles);
     }
 
     private static void ClearMapObjectPositions()
@@ -2283,6 +2447,94 @@ public sealed class Minimap : ModBase
         WallPositions.Clear();
         ChestPositions.Clear();
         EntrancePositions.Clear();
+        LadderPositions.Clear();
+        CollectiblePositions.Clear();
+        MissionPositions.Clear();
+    }
+
+    private static void RefreshMissionMarkers()
+    {
+        MissionPositions.Clear();
+        if (!Instance._showMissions.Value || _map is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var story = API.GetManagedSingletonT<app.StoryManager>();
+            var info = API.GetManagedSingletonT<app.EnvironmentManager>()?.EnvInfoManager;
+            if (!IsAlive(story) || !IsAlive(info))
+            {
+                return;
+            }
+
+            // This is the enabled beacon list also used by GUI060000, not the
+            // full mission database. BeaconInfo is a value type; copy its data.
+            var beacons = story.getObjectiveBeaconInfoAll();
+            if (!IsAlive(beacons))
+            {
+                return;
+            }
+
+            var positions = new List<MarkerPosition>();
+            for (var index = 0;
+                 index < Math.Min(beacons.Count, MaxMissionBeaconsToInspect);
+                 ++index)
+            {
+                var beacon = beacons[index];
+                if (!beacon.IsSet || !IsAlive(beacon.AreaID))
+                {
+                    continue;
+                }
+
+                var area = (app.EnvDef.AreaID_Fixed)beacon.AreaID.Value;
+                var position = beacon.Pos;
+                if (!_map.AreaFields.TryGetValue(area, out var floors) ||
+                    !float.IsFinite(position.x) || !float.IsFinite(position.y) ||
+                    !float.IsFinite(position.z) ||
+                    !floors.Contains(info.getFieldOrder(area, position)))
+                {
+                    continue;
+                }
+
+                uint pattern;
+                switch (beacon.MissionType)
+                {
+                    case app.MissionDef.MISSION_TYPE.MAIN_MISSION:
+                        pattern = MainMissionIconPattern;
+                        break;
+                    case app.MissionDef.MISSION_TYPE.CHARACTER_MISSION:
+                        pattern = CharacterMissionIconPattern;
+                        break;
+                    case app.MissionDef.MISSION_TYPE.SUB_MISSION:
+                        pattern = SideMissionIconPattern;
+                        break;
+                    default:
+                        continue;
+                }
+
+                var preface = beacon.IsPreface &&
+                    beacon.MissionType != app.MissionDef.MISSION_TYPE.MAIN_MISSION;
+                positions.Add(new MarkerPosition(
+                    position.x, position.z,
+                    preface ? pattern + 3 : pattern,
+                    preface ? MissionPrefaceSequence : 0,
+                    MarkerColor.Mission));
+            }
+
+            MissionPositions.AddRange(positions);
+            Volatile.Write(ref _missionErrorReported, 0);
+        }
+        catch (Exception exception)
+        {
+            // Mission data may disappear during a transition; other marker
+            // categories can still update without retaining stale missions.
+            if (Interlocked.Exchange(ref _missionErrorReported, 1) == 0)
+            {
+                Instance.Log($"Mission marker refresh will retry: {exception}", ModLogLevel.Error);
+            }
+        }
     }
 
     private static void UpdateMapObjectMarkers(
@@ -2332,10 +2584,16 @@ public sealed class Minimap : ModBase
             }
 
             var texture = textures[used];
-            if (texture.UVPatternNo != marker.IconPatternNo)
+            var sequenceChanged = texture.UVSequenceNo != marker.IconSequenceNo;
+            if (sequenceChanged)
+            {
+                texture.UVSequenceNo = marker.IconSequenceNo;
+            }
+            if (sequenceChanged || texture.UVPatternNo != marker.IconPatternNo)
             {
                 texture.UVPatternNo = marker.IconPatternNo;
             }
+            ApplyMarkerColor(texture, marker.Color);
             SetMarkerTexture(
                 texture,
                 x,
@@ -2347,6 +2605,21 @@ public sealed class Minimap : ModBase
         }
 
         HideUnused(textures, used);
+    }
+
+    private static void ApplyMarkerColor(via.gui.Texture texture, MarkerColor color)
+    {
+        var address = GetAddress(texture);
+        // New prefab textures have no color preset. Cache only successful
+        // assignments, and change it when a reused slot gets another category.
+        MarkerColors.TryGetValue(address, out var appliedColor);
+        if (appliedColor == color)
+        {
+            return;
+        }
+
+        texture.ColorPreset = _markerColorPresets[(int)color];
+        MarkerColors[address] = color;
     }
 
     private static void UpdateFootprintMarkers(
@@ -2502,6 +2775,9 @@ public sealed class Minimap : ModBase
         SetVisible(_wallMarkers, false);
         SetVisible(_chestMarkers, false);
         SetVisible(_entranceMarkers, false);
+        SetVisible(_ladderMarkers, false);
+        SetVisible(_collectibleMarkers, false);
+        SetVisible(_missionMarkers, false);
         SetVisible(_footprintMarkers, false);
     }
 
@@ -2818,7 +3094,12 @@ public sealed class Minimap : ModBase
         _wallMarkers = Array.Empty<via.gui.Texture>();
         _chestMarkers = Array.Empty<via.gui.Texture>();
         _entranceMarkers = Array.Empty<via.gui.Texture>();
+        _ladderMarkers = Array.Empty<via.gui.Texture>();
+        _collectibleMarkers = Array.Empty<via.gui.Texture>();
+        _missionMarkers = Array.Empty<via.gui.Texture>();
         _footprintMarkers = Array.Empty<via.gui.Texture>();
+        _markerColorPresets = Array.Empty<_System.Guid>();
+        MarkerColors.Clear();
         _playerMarker = null;
         _circleBorder = null;
         _rectangleMask = null;
@@ -2959,16 +3240,22 @@ public sealed class Minimap : ModBase
 
     private readonly struct MarkerPosition
     {
-        public MarkerPosition(float x, float z, uint iconPatternNo = 0)
+        public MarkerPosition(
+            float x, float z, uint iconPatternNo = 0, uint iconSequenceNo = 0,
+            MarkerColor color = MarkerColor.Original)
         {
             X = x;
             Z = z;
             IconPatternNo = iconPatternNo;
+            IconSequenceNo = iconSequenceNo;
+            Color = color;
         }
 
         public float X { get; }
         public float Z { get; }
         public uint IconPatternNo { get; }
+        public uint IconSequenceNo { get; }
+        public MarkerColor Color { get; }
     }
 
     private sealed class MapTile
