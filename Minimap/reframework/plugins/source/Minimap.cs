@@ -1155,34 +1155,52 @@ public sealed class Minimap : ModBase
                     $"root ({_map.RootX:0.#}, {_map.RootY:0.#}).");
             }
 
-            var screen = root.ScreenSize;
-            if (screen.w <= 0.0f || screen.h <= 0.0f)
+            var hudScreen = root.ScreenSize;
+            var sceneView = _gui.SceneView;
+            if (!IsAlive(sceneView) ||
+                !float.IsFinite(hudScreen.h) || hudScreen.h <= 0.0f)
+            {
+                HideMap();
+                return;
+            }
+
+            // The HUD canvas stays 16:9 on ultrawide displays. Keep its logical
+            // height, but match the render area so every map element scales uniformly.
+            // WindowSize can include letterboxing; Size is the actual render area.
+            var renderSize = sceneView.Size;
+            var screenHeight = hudScreen.h;
+            var screenWidth = screenHeight * (renderSize.w / renderSize.h);
+            if (!float.IsFinite(renderSize.w) || renderSize.w <= 0.0f ||
+                !float.IsFinite(renderSize.h) || renderSize.h <= 0.0f ||
+                !float.IsFinite(screenWidth) || screenWidth <= 0.0f)
             {
                 HideMap();
                 return;
             }
 
             var nativeScreen = _guiView.ScreenSize;
-            if (nativeScreen.w != screen.w || nativeScreen.h != screen.h)
+            if (nativeScreen.w != screenWidth || nativeScreen.h != screenHeight)
             {
-                _guiView.ScreenSize = screen;
+                nativeScreen.w = screenWidth;
+                nativeScreen.h = screenHeight;
+                _guiView.ScreenSize = nativeScreen;
             }
 
-            var displayWidth = Math.Clamp(Instance._width.Value, 1.0f, screen.w);
-            var displayHeight = Math.Clamp(Instance._height.Value, 1.0f, screen.h);
+            var displayWidth = Math.Clamp(Instance._width.Value, 1.0f, screenWidth);
+            var displayHeight = Math.Clamp(Instance._height.Value, 1.0f, screenHeight);
             if (Instance._shape.Value == CircleShape)
             {
                 displayWidth = displayHeight = MathF.Min(displayWidth, displayHeight);
             }
 
             var left = Math.Clamp(
-                screen.w - Instance._rightOffset.Value - displayWidth,
+                screenWidth - Instance._rightOffset.Value - displayWidth,
                 0.0f,
-                screen.w - displayWidth);
+                screenWidth - displayWidth);
             var top = Math.Clamp(
                 Instance._topOffset.Value,
                 0.0f,
-                screen.h - displayHeight);
+                screenHeight - displayHeight);
             var position = playerTransform.Position;
             var mapScale = _map.IsFlipSideUp ? -WorldToMapPixels : WorldToMapPixels;
             var mapX = _map.RootX + position.x * mapScale;
@@ -1488,7 +1506,7 @@ public sealed class Minimap : ModBase
 
     private static void CreateNativeGui()
     {
-        _guiResource = API.GetResourceManager().CreateResource(
+        _guiResource = CreateOwnedResource(
             "via.gui.GUIResource", GuiResourcePath);
         _guiHolderObject = _guiResource?.CreateHolder("via.gui.GUIResourceHolder");
         var holder = _guiHolderObject?.TryAs<via.gui.GUIResourceHolder>();
@@ -1760,8 +1778,7 @@ public sealed class Minimap : ModBase
         try
         {
             var definition = map.Tiles[Tiles.Count];
-            var resourceManager = API.GetResourceManager();
-            resource = resourceManager.CreateResource(
+            resource = CreateOwnedResource(
                 "via.render.TextureResource", definition.ResourcePath);
             var holderObject = resource?.CreateHolder(
                 "via.render.TextureResourceHolder");
@@ -2787,6 +2804,17 @@ public sealed class Minimap : ModBase
         {
             LogCleanupWarning(operation, exception);
         }
+    }
+
+    private static REFrameworkNET.Resource CreateOwnedResource(
+        string typeName,
+        string resourcePath)
+    {
+        var resource = API.GetResourceManager().CreateResource(typeName, resourcePath);
+        // The API does not retain the handle for us. Holders own separate references;
+        // take our own reference to match the release on rollback, map reset or unload.
+        resource?.AddRef();
+        return resource;
     }
 
     private static void TryReleaseResource(
