@@ -560,6 +560,7 @@ public sealed class FasterInteract : ModBase
         None,
         OniWall,
         Door,
+        TreasureBox,
         Ladder,
     }
 
@@ -568,6 +569,8 @@ public sealed class FasterInteract : ModBase
         OriginalPlayerLayerSpeeds = new();
     private static readonly System.Collections.Generic.Dictionary<ulong, float>
         OriginalDoorLayerSpeeds = new();
+    private static readonly System.Collections.Generic.Dictionary<ulong, float>
+        OriginalTreasureBoxLayerSpeeds = new();
     private static readonly System.Collections.Generic.Dictionary<ulong, float>
         LastElevatorPositions = new();
     [ThreadStatic]
@@ -580,6 +583,7 @@ public sealed class FasterInteract : ModBase
     private static ulong _gettingLadderMoveSpeed;
     private static ulong _modifiedAction;
     private static ulong _acceleratedDoor;
+    private static ulong _acceleratedTreasureBox;
     private static InteractionFeature _activeFeature;
     private static bool _originalOverrideEnabled;
     private static float _originalOverrideSpeed;
@@ -587,10 +591,11 @@ public sealed class FasterInteract : ModBase
     private readonly ModConfig<float> _interactionSpeed;
     private readonly ModConfig<bool> _oniWallEnabled;
     private readonly ModConfig<bool> _doorEnabled;
+    private readonly ModConfig<bool> _treasureBoxEnabled;
     private readonly ModConfig<bool> _elevatorDescentEnabled;
     private readonly ModConfig<bool> _ladderEnabled;
 
-    private FasterInteract() : base("FasterInteract", "1.1")
+    private FasterInteract() : base("FasterInteract", "1.2")
     {
         _interactionSpeed = AddFloatConfig(
             "Interaction speed",
@@ -607,6 +612,10 @@ public sealed class FasterInteract : ModBase
             "Enable door acceleration",
             true,
             key: "DoorEnabled");
+        _treasureBoxEnabled = AddBoolConfig(
+            "Enable treasure chest acceleration",
+            true,
+            key: "TreasureBoxEnabled");
         _elevatorDescentEnabled = AddBoolConfig(
             "Enable elevator descent acceleration",
             true,
@@ -628,6 +637,7 @@ public sealed class FasterInteract : ModBase
     {
         RestoreActiveInteraction();
         RestoreDoorLayerSpeeds();
+        RestoreTreasureBoxLayerSpeeds();
         LastElevatorPositions.Clear();
         _enteringPlayerAction = 0;
         _updatingElevator = 0;
@@ -696,6 +706,27 @@ public sealed class FasterInteract : ModBase
         catch (Exception exception)
         {
             Instance.LogErrorOnce("Failed to update door speed", exception);
+        }
+
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.GimmickTreasureBox),
+        "doUpdateBegin",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeTreasureBoxUpdate(Span<ulong> args)
+    {
+        try
+        {
+            if (args.Length > 1 && args[1] == _acceleratedTreasureBox)
+            {
+                UpdateTreasureBoxSpeed(args[1]);
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce("Failed to update treasure chest speed", exception);
         }
 
         return PreHookResult.Continue;
@@ -947,6 +978,10 @@ public sealed class FasterInteract : ModBase
             {
                 BeginDoorAcceleration(gimmickAddress);
             }
+            else if (feature == InteractionFeature.TreasureBox)
+            {
+                BeginTreasureBoxAcceleration(gimmickAddress);
+            }
         }
 
         var speed = GetInteractionSpeed();
@@ -957,7 +992,17 @@ public sealed class FasterInteract : ModBase
             ApplyPlayerLayerSpeeds(speed);
             if (feature == InteractionFeature.Door)
             {
-                ApplyDoorLayerSpeeds(_acceleratedDoor, speed);
+                ApplyGimmickLayerSpeeds(
+                    _acceleratedDoor,
+                    speed,
+                    OriginalDoorLayerSpeeds);
+            }
+            else if (feature == InteractionFeature.TreasureBox)
+            {
+                ApplyGimmickLayerSpeeds(
+                    _acceleratedTreasureBox,
+                    speed,
+                    OriginalTreasureBoxLayerSpeeds);
             }
         }
     }
@@ -981,11 +1026,6 @@ public sealed class FasterInteract : ModBase
                 : InteractionFeature.None;
         }
 
-        if (!Instance._doorEnabled.Value)
-        {
-            return InteractionFeature.None;
-        }
-
         var action = actionObject
             ?.TryAs<app.PlayerCommonAction.cInteractGimmickBase>();
         if (action is null)
@@ -994,8 +1034,18 @@ public sealed class FasterInteract : ModBase
         }
 
         gimmickAddress = GetActionGimmickAddress(actionObject, action);
-        return GetManagedObject<app.GimmickDoor>(gimmickAddress) is not null
-            ? InteractionFeature.Door
+        var gimmickObject = ManagedObject.IsManagedObject(gimmickAddress)
+            ? ManagedObject.ToManagedObject(gimmickAddress)
+            : null;
+        if (Instance._doorEnabled.Value &&
+            gimmickObject?.TryAs<app.GimmickDoor>() is not null)
+        {
+            return InteractionFeature.Door;
+        }
+
+        return Instance._treasureBoxEnabled.Value &&
+               gimmickObject?.TryAs<app.GimmickTreasureBox>() is not null
+            ? InteractionFeature.TreasureBox
             : InteractionFeature.None;
     }
 
@@ -1007,6 +1057,7 @@ public sealed class FasterInteract : ModBase
         {
             InteractionFeature.OniWall => Instance._oniWallEnabled.Value,
             InteractionFeature.Door => Instance._doorEnabled.Value,
+            InteractionFeature.TreasureBox => Instance._treasureBoxEnabled.Value,
             InteractionFeature.Ladder => Instance._ladderEnabled.Value,
             _ => false,
         };
@@ -1127,17 +1178,54 @@ public sealed class FasterInteract : ModBase
             return;
         }
 
-        ApplyDoorLayerSpeeds(doorAddress, GetInteractionSpeed());
+        ApplyGimmickLayerSpeeds(
+            doorAddress,
+            GetInteractionSpeed(),
+            OriginalDoorLayerSpeeds);
     }
 
-    private static void ApplyDoorLayerSpeeds(
-        ulong doorAddress,
-        float multiplier)
+    private static void BeginTreasureBoxAcceleration(ulong treasureBoxAddress)
     {
-        var doorObject = ManagedObject.IsManagedObject(doorAddress)
-            ? ManagedObject.ToManagedObject(doorAddress)
+        if (treasureBoxAddress == 0 ||
+            treasureBoxAddress == _acceleratedTreasureBox)
+        {
+            return;
+        }
+
+        RestoreTreasureBoxLayerSpeeds();
+        _acceleratedTreasureBox = treasureBoxAddress;
+    }
+
+    private static void UpdateTreasureBoxSpeed(ulong treasureBoxAddress)
+    {
+        var treasureBoxObject = ManagedObject.IsManagedObject(treasureBoxAddress)
+            ? ManagedObject.ToManagedObject(treasureBoxAddress)
             : null;
-        var mcMotion = (doorObject as IObject)
+        var treasureBox = treasureBoxObject?.TryAs<app.GimmickTreasureBox>();
+        if (treasureBox is null ||
+            !Instance._treasureBoxEnabled.Value ||
+            (_activeFeature != InteractionFeature.TreasureBox &&
+             treasureBox.State != app.GimmickTreasureBox.STATE.OPENING))
+        {
+            RestoreTreasureBoxLayerSpeeds();
+            return;
+        }
+
+        ApplyGimmickLayerSpeeds(
+            treasureBoxAddress,
+            GetInteractionSpeed(),
+            OriginalTreasureBoxLayerSpeeds);
+    }
+
+    private static void ApplyGimmickLayerSpeeds(
+        ulong gimmickAddress,
+        float multiplier,
+        System.Collections.Generic.Dictionary<ulong, float> originalSpeeds)
+    {
+        var gimmickObject = ManagedObject.IsManagedObject(gimmickAddress)
+            ? ManagedObject.ToManagedObject(gimmickAddress)
+            : null;
+        var mcMotion = (gimmickObject as IObject)
             ?.GetField("_McMotion") as ManagedObject;
         var motionObject = (mcMotion as IObject)
             ?.GetField("_Motion") as ManagedObject;
@@ -1152,19 +1240,25 @@ public sealed class FasterInteract : ModBase
             motion.getLayerCount(),
             isPrivate: false,
             multiplier,
-            OriginalDoorLayerSpeeds);
+            originalSpeeds);
         ApplyLayerSpeeds(
             motion,
             motion.getPrivateLayerCount(),
             isPrivate: true,
             multiplier,
-            OriginalDoorLayerSpeeds);
+            originalSpeeds);
     }
 
     private static void RestoreDoorLayerSpeeds()
     {
         RestoreLayerSpeeds(OriginalDoorLayerSpeeds);
         _acceleratedDoor = 0;
+    }
+
+    private static void RestoreTreasureBoxLayerSpeeds()
+    {
+        RestoreLayerSpeeds(OriginalTreasureBoxLayerSpeeds);
+        _acceleratedTreasureBox = 0;
     }
 
     private static void RestoreLayerSpeeds(
