@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading;
 using Hexa.NET.ImGui;
@@ -922,7 +922,7 @@ public sealed class Minimap : ModBase
     private const int TilePixels = 2048;
     private const float WorldToMapPixels = 6.4f;
     private const int TileSlotCount = 16;
-    private const string GuiResourcePath = "GUI/Minimap/MinimapGroupedIcons.gui";
+    private const string GuiResourcePath = "GUI/Minimap/MinimapMissionAreas.gui";
     private const string GuiGameObjectName = "Minimap_GUI";
     private const string WindowName = "Minimap_Window";
     private const string GroupName = "Minimap_Group";
@@ -935,7 +935,10 @@ public sealed class Minimap : ModBase
     private const string PlayerMarkerPrefix = "Minimap_PlayerMarker_";
     private const string CameraArrowPrefix = "Minimap_CameraArrow_";
     private const string WallMarkerPrefix = "Minimap_WallMarker_";
+    private const string HiddenChestMarkerPrefix = "Minimap_HiddenChestMarker_";
     private const string ChestMarkerPrefix = "Minimap_ChestMarker_";
+    private const string LockedGateMarkerPrefix = "Minimap_LockedGateMarker_";
+    private const string MissionRangePrefix = "Minimap_MissionRange_";
     private const string EntranceMarkerPrefix = "Minimap_EntranceMarker_";
     private const string LadderMarkerPrefix = "Minimap_LadderMarker_";
     private const string CollectibleMarkerPrefix = "Minimap_CollectibleMarker_";
@@ -948,7 +951,13 @@ public sealed class Minimap : ModBase
     private const long GuiResolveTimeoutMilliseconds = 10000;
     private const int MaxGuiPlayObjectsToInspect = 512;
     private const int WallMarkerCount = 12;
+    private const int HiddenChestMarkerCount = 24;
+    private const int MaxChestObjectsToInspect = 1024;
+    private const int MaxChestContextsToInspect = 4096;
+    private const int ChestTakenSaveState = 15;
     private const int ChestMarkerCount = 16;
+    private const int LockedGateMarkerCount = 24;
+    private const int MissionRangeCount = 16;
     private const int EntranceMarkerCount = 16;
     private const int LadderMarkerCount = 32;
     private const int CollectibleMarkerCount = 32;
@@ -959,11 +968,11 @@ public sealed class Minimap : ModBase
     private const ushort OverlayDrawPriority = ushort.MaxValue;
     private const ushort PlayerDrawPriority = ushort.MaxValue;
     private const float BorderThickness = 1.5f;
-    private const float CameraTipDistance = 42.0f;
-    private const float CameraRearDistance = 25.0f;
-    private const float CameraHalfWidth = 9.0f;
-    private const int CameraFillPartCount = 9;
-    private const float TriangleFillOverlap = 0.75f;
+    private const float CameraTipDistance = 38.0f;
+    private const float CameraRearDistance = 24.0f;
+    private const float CameraHalfWidth = 7.0f;
+    private const float CameraArrowThickness = 2.0f;
+    private const int CameraArrowSlotCount = 9; // Existing prefab slots; only two are drawn.
     private const float PlayerMarkerSize = 50.0f;
     private const float WallMarkerSize = 48.0f;
     private const float ChestMarkerSize = 48.0f;
@@ -978,6 +987,7 @@ public sealed class Minimap : ModBase
     private const uint ArmBreakWallIconPattern = 3;
     private const uint EyeHideWallIconPattern = 2;
     private const uint InvasionWallIconPattern = 8;
+    private const uint LockedGateIconPattern = 10; // Native red padlock in uvs000122.
     private const uint ChestIconPattern = 2;
     private const uint EntranceIconPattern = 7;
     private const uint LadderIconPattern = 9;
@@ -1008,6 +1018,7 @@ public sealed class Minimap : ModBase
 
     private const int MapFixed = 0;
     private const int PlayerFixed = 1;
+    private const int CameraFixed = 2;
     private const int RectangleShape = 0;
     private const int CircleShape = 1;
 
@@ -1015,6 +1026,7 @@ public sealed class Minimap : ModBase
     {
         "North",
         "Face",
+        "sight",
     };
 
     private static readonly string[] ShapeNames =
@@ -1026,7 +1038,10 @@ public sealed class Minimap : ModBase
     private static readonly Minimap Instance = new();
     private static readonly List<MapTile> Tiles = new();
     private static readonly List<MarkerPosition> WallPositions = new();
+    private static readonly List<MarkerPosition> HiddenChestPositions = new();
     private static readonly List<MarkerPosition> ChestPositions = new();
+    private static readonly List<MarkerPosition> LockedGatePositions = new();
+    private static readonly List<MissionRange> MissionRanges = new();
     private static readonly List<MarkerPosition> EntrancePositions = new();
     private static readonly List<MarkerPosition> LadderPositions = new();
     private static readonly List<MarkerPosition> CollectiblePositions = new();
@@ -1044,6 +1059,8 @@ public sealed class Minimap : ModBase
     private readonly ModConfig<float> _topOffset;
     private readonly ModConfig<bool> _showOniWalls;
     private readonly ModConfig<bool> _showChests;
+    private readonly ModConfig<bool> _showHiddenChests;
+    private readonly ModConfig<bool> _showLockedGates;
     private readonly ModConfig<bool> _showEntrances;
     private readonly ModConfig<bool> _showLadders;
     private readonly ModConfig<bool> _showCollectibles;
@@ -1067,7 +1084,10 @@ public sealed class Minimap : ModBase
     private static via.gui.Texture _playerMarker;
     private static via.gui.Rect[] _cameraArrows = Array.Empty<via.gui.Rect>();
     private static via.gui.Texture[] _wallMarkers = Array.Empty<via.gui.Texture>();
+    private static via.gui.Texture[] _hiddenChestMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _chestMarkers = Array.Empty<via.gui.Texture>();
+    private static via.gui.Texture[] _lockedGateMarkers = Array.Empty<via.gui.Texture>();
+    private static via.gui.Circle[] _missionRanges = Array.Empty<via.gui.Circle>();
     private static via.gui.Texture[] _entranceMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _ladderMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _collectibleMarkers = Array.Empty<via.gui.Texture>();
@@ -1081,6 +1101,7 @@ public sealed class Minimap : ModBase
     private static int _errorReported;
     private static int _markerErrorReported;
     private static int _missionErrorReported;
+    private static int _chestErrorReported;
     private static int _cleanupErrorReported;
 
     private Minimap() : base("Minimap", "1.1")
@@ -1097,13 +1118,15 @@ public sealed class Minimap : ModBase
         _width = AddFloatConfig("Width", 420.0f, 20.0f, 800.0f, "%.0f");
         _height = AddFloatConfig("Height", 280.0f, 20.0f, 540.0f, "%.0f");
         _pixelsPerMeter = AddFloatConfig(
-            "Zoom", 4.8f, 2.0f, 10.0f, "%.1f px/m");
+            "Zoom", 4.8f, 0.5f, 10.0f, "%.1f px/m");
         _rightOffset = AddPixelInputConfig(
             "Right offset (px)", 36.0f, 0.0f, MaximumOffset, key: "Right margin");
         _topOffset = AddPixelInputConfig(
             "Top offset (px)", 80.0f, 0.0f, MaximumOffset, key: "Top margin");
         _showOniWalls = AddBoolConfig("Show Oni walls", true);
         _showChests = AddBoolConfig("Show chests", true);
+        _showHiddenChests = AddBoolConfig("Show hidden chests", true);
+        _showLockedGates = AddBoolConfig("Show locked doors", true);
         _showEntrances = AddBoolConfig("Show area entrances/exits", true);
         _showLadders = AddBoolConfig("Show ladders", true);
         _showCollectibles = AddBoolConfig("Show collectibles", true);
@@ -1128,6 +1151,7 @@ public sealed class Minimap : ModBase
         _errorReported = 0;
         _markerErrorReported = 0;
         _missionErrorReported = 0;
+        _chestErrorReported = 0;
         _cleanupErrorReported = 0;
         Instance.UnloadMod();
         Instance.Log("Unloaded and removed native map textures.");
@@ -1146,6 +1170,8 @@ public sealed class Minimap : ModBase
                     out var guiManager,
                     out var root,
                     out var fixedStage,
+                    out var currentArea,
+                    out var currentFloor,
                     out var playerTransform))
             {
                 HideMap();
@@ -1159,7 +1185,8 @@ public sealed class Minimap : ModBase
             }
 
             var stageKey = unchecked((int)(uint)fixedStage);
-            if (_map is null || _map.StageKey != stageKey)
+            if (_map is null || _map.StageKey != stageKey ||
+                _map.PlayerArea != currentArea || _map.PlayerFloor != currentFloor)
             {
                 if (Environment.TickCount64 < _nextRetryTick)
                 {
@@ -1167,8 +1194,7 @@ public sealed class Minimap : ModBase
                     return;
                 }
 
-                ResetMap();
-                if (!TryBuildMap(guiManager, fixedStage, out var map))
+                if (!TryBuildMap(guiManager, fixedStage, currentArea, currentFloor, out var map))
                 {
                     _nextRetryTick = Environment.TickCount64 + RetryDelayMilliseconds;
                     HideMap();
@@ -1182,7 +1208,15 @@ public sealed class Minimap : ModBase
                         $"but the prefab provides {_tileSlots.Length}.");
                 }
 
+                // Area zones may change within one map sheet. Reuse its
+                // textures unless the selected sheet actually changes.
+                if (_map is null || _map.StageKey != map.StageKey ||
+                    _map.MapIndex != map.MapIndex || _map.AreaIndex != map.AreaIndex)
+                {
+                    ResetMap();
+                }
                 _map = map;
+                _nextMarkerRefreshTick = 0;
             }
 
             if (Tiles.Count < _map.Tiles.Length)
@@ -1203,7 +1237,9 @@ public sealed class Minimap : ModBase
 
                 Instance.Log(
                     $"Native map ready: {_map.Columns}x{_map.Rows} tiles, " +
-                    $"root ({_map.RootX:0.#}, {_map.RootY:0.#}).");
+                    $"root ({_map.RootX:0.#}, {_map.RootY:0.#}), " +
+                    $"area {_map.PlayerArea}, floor {_map.PlayerFloor}, " +
+                    $"sheet {_map.MapIndex}/{_map.AreaIndex}.");
             }
 
             var hudScreen = root.ScreenSize;
@@ -1259,15 +1295,15 @@ public sealed class Minimap : ModBase
             var forward = playerTransform.AxisZ;
             var forwardX = forward.x * MathF.Sign(mapScale);
             var forwardY = forward.z * MathF.Sign(mapScale);
-            var playerFixed = Instance._orientation.Value == PlayerFixed;
-            var mapRotation = playerFixed
-                ? -MathF.Atan2(forwardX, -forwardY)
-                : 0.0f;
             var hasCameraDirection = TryGetCameraDirection(
                 MathF.Sign(mapScale),
-                mapRotation,
                 out var cameraForwardX,
                 out var cameraForwardY);
+            var mapRotation = GetMapRotation(
+                Instance._orientation.Value, forwardX, forwardY,
+                hasCameraDirection, cameraForwardX, cameraForwardY);
+            RotateDirection(ref forwardX, ref forwardY, mapRotation);
+            RotateDirection(ref cameraForwardX, ref cameraForwardY, mapRotation);
             UpdateNativeMap(
                 mapX,
                 mapY,
@@ -1293,8 +1329,8 @@ public sealed class Minimap : ModBase
                 top,
                 displayWidth,
                 displayHeight,
-                playerFixed ? 0.0f : forwardX,
-                playerFixed ? -1.0f : forwardY,
+                forwardX,
+                forwardY,
                 cameraForwardX,
                 cameraForwardY,
                 hasCameraDirection,
@@ -1326,11 +1362,15 @@ public sealed class Minimap : ModBase
         out app.GUIManager guiManager,
         out via.gui.View root,
         out app.EnvDef.StageID_Fixed fixedStage,
+        out app.EnvDef.AreaID_Fixed currentArea,
+        out app.EnvDef.FIELD_ORDER_Fixed currentFloor,
         out via.Transform playerTransform)
     {
         guiManager = null;
         root = null;
         fixedStage = default;
+        currentArea = default;
+        currentFloor = default;
         playerTransform = null;
 
         var gameFlow = API.GetManagedSingletonT<app.GameFlowManager>();
@@ -1364,14 +1404,19 @@ public sealed class Minimap : ModBase
         playerTransform = API.GetManagedSingletonT<app.PlayerManager>()
             ?.getControllingPlayerInfo()?.Object?.Transform;
         var environment = API.GetManagedSingletonT<app.EnvironmentManager>();
-        return IsAlive(playerTransform) &&
-            IsAlive(environment) &&
-            Enum.TryParse(environment.StageID.ToString(), out fixedStage);
+        var info = environment?.EnvInfoManager;
+        if (!IsAlive(playerTransform) || !IsAlive(environment) || !IsAlive(info) ||
+            !Enum.TryParse(environment.StageID.ToString(), out fixedStage) ||
+            !Enum.TryParse(environment._AreaID.ToString(), out currentArea))
+        {
+            return false;
+        }
+        currentFloor = info.getPlayerFieldOrder();
+        return true;
     }
 
     private static bool TryGetCameraDirection(
         float mapSign,
-        float mapRotation,
         out float directionX,
         out float directionY)
     {
@@ -1395,16 +1440,38 @@ public sealed class Minimap : ModBase
             return false;
         }
 
-        var cosine = MathF.Cos(mapRotation);
-        var sine = MathF.Sin(mapRotation);
-        directionX = cosine * mapX - sine * mapY;
-        directionY = sine * mapX + cosine * mapY;
+        directionX = mapX;
+        directionY = mapY;
         return true;
+    }
+
+    private static float GetMapRotation(
+        int orientation, float playerX, float playerY,
+        bool hasCameraDirection, float cameraX, float cameraY)
+    {
+        if (orientation != PlayerFixed && orientation != CameraFixed) return 0.0f;
+
+        // Use the player's heading if the camera has no usable horizontal direction.
+        var useCamera = orientation == CameraFixed && hasCameraDirection;
+        var x = useCamera ? cameraX : playerX;
+        var y = useCamera ? cameraY : playerY;
+        return -MathF.Atan2(x, -y);
+    }
+
+    private static void RotateDirection(ref float x, ref float y, float rotation)
+    {
+        var cosine = MathF.Cos(rotation);
+        var sine = MathF.Sin(rotation);
+        var rotatedX = cosine * x - sine * y;
+        y = sine * x + cosine * y;
+        x = rotatedX;
     }
 
     private static bool TryBuildMap(
         app.GUIManager guiManager,
         app.EnvDef.StageID_Fixed fixedStage,
+        app.EnvDef.AreaID_Fixed currentArea,
+        app.EnvDef.FIELD_ORDER_Fixed currentFloor,
         out MapDefinition map)
     {
         map = null;
@@ -1417,6 +1484,8 @@ public sealed class Minimap : ModBase
         }
 
         app.user_data.MapData.cArea area = null;
+        var selectedMapIndex = -1;
+        var selectedAreaIndex = -1;
         var stageKey = unchecked((int)(uint)fixedStage);
         for (var mapIndex = 0; mapIndex < allMaps.Count && area is null; ++mapIndex)
         {
@@ -1429,11 +1498,29 @@ public sealed class Minimap : ModBase
             for (var areaIndex = 0; areaIndex < areas.Count; ++areaIndex)
             {
                 var candidate = areas[areaIndex];
-                if (IsAlive(candidate) && candidate.StageID?.Value == stageKey)
+                if (!IsAlive(candidate) || candidate.StageID?.Value != stageKey)
                 {
+                    continue;
+                }
+                var fields = candidate.AreaFields;
+                if (!IsAlive(fields)) continue;
+                // Native MapData.tryGetData uses an exact AreaID/Floor pair.
+                // INVALID is a real floor entry, not a wildcard for all levels.
+                for (var fieldIndex = 0; fieldIndex < fields.Count; ++fieldIndex)
+                {
+                    var field = fields[fieldIndex];
+                    if (!IsAlive(field?.AreaID) || !IsAlive(field.Floor) ||
+                        (app.EnvDef.AreaID_Fixed)field.AreaID.Value != currentArea ||
+                        (app.EnvDef.FIELD_ORDER_Fixed)field.Floor.Value != currentFloor)
+                    {
+                        continue;
+                    }
                     area = candidate;
+                    selectedMapIndex = mapIndex;
+                    selectedAreaIndex = areaIndex;
                     break;
                 }
+                if (area is not null) break;
             }
         }
 
@@ -1507,6 +1594,10 @@ public sealed class Minimap : ModBase
 
         map = new MapDefinition(
             stageKey,
+            currentArea,
+            currentFloor,
+            selectedMapIndex,
+            selectedAreaIndex,
             area.Root.x,
             area.Root.y,
             area.IsFlipSideUp,
@@ -1629,11 +1720,22 @@ public sealed class Minimap : ModBase
         var playerMarker = FindNamedPlayObject(view, $"{PlayerMarkerPrefix}00")
             ?.TryAs<via.gui.Texture>();
         var cameraArrows = FindRects(
-            view, CameraArrowPrefix, CameraFillPartCount);
+            view, CameraArrowPrefix, CameraArrowSlotCount);
         var wallMarkers = FindOptionalTextures(
             view, WallMarkerPrefix, WallMarkerCount);
+        var hiddenChestMarkers = FindOptionalTextures(
+            view, HiddenChestMarkerPrefix, HiddenChestMarkerCount);
         var chestMarkers = FindOptionalTextures(
             view, ChestMarkerPrefix, ChestMarkerCount);
+        var lockedGateMarkers = FindOptionalTextures(
+            view, LockedGateMarkerPrefix, LockedGateMarkerCount);
+        var missionRanges = new via.gui.Circle[MissionRangeCount];
+        for (var index = 0; index < missionRanges.Length; ++index)
+        {
+            var name = $"{MissionRangePrefix}{index:00}";
+            missionRanges[index] = FindNamedPlayObject(view, name)?.TryAs<via.gui.Circle>()
+                ?? throw new InvalidOperationException($"The Minimap GUI resource is missing {name}.");
+        }
         var entranceMarkers = FindOptionalTextures(
             view, EntranceMarkerPrefix, EntranceMarkerCount);
         var ladderMarkers = FindOptionalTextures(
@@ -1668,6 +1770,9 @@ public sealed class Minimap : ModBase
         _cameraArrows = cameraArrows;
         _wallMarkers = wallMarkers;
         _chestMarkers = chestMarkers;
+        _hiddenChestMarkers = hiddenChestMarkers;
+        _lockedGateMarkers = lockedGateMarkers;
+        _missionRanges = missionRanges;
         _entranceMarkers = entranceMarkers;
         _ladderMarkers = ladderMarkers;
         _collectibleMarkers = collectibleMarkers;
@@ -1702,6 +1807,14 @@ public sealed class Minimap : ModBase
         _rectangleMask.ControlPoint = via.gui.ControlPoint.LeftTop;
         _rectangleMask.MaskType = via.gui.MaskType.Mask;
 
+        foreach (var circle in _missionRanges)
+        {
+            circle.Visible = false;
+            circle.HitVisible = false;
+            circle.ControlPoint = via.gui.ControlPoint.CenterCenter;
+            circle.MaskType = via.gui.MaskType.Target;
+        }
+
         _circleBorder.Visible = false;
         _circleBorder.HitVisible = false;
         _circleBorder.ControlPoint = via.gui.ControlPoint.CenterCenter;
@@ -1728,6 +1841,8 @@ public sealed class Minimap : ModBase
                  {
                      _wallMarkers,
                      _chestMarkers,
+                     _hiddenChestMarkers,
+                     _lockedGateMarkers,
                      _entranceMarkers,
                      _ladderMarkers,
                      _collectibleMarkers,
@@ -1742,17 +1857,36 @@ public sealed class Minimap : ModBase
         }
 
         // Reuse the player's uvs000122 atlas for the native chest symbol.
-        foreach (var texture in _chestMarkers)
+        foreach (var textures in new[] { _chestMarkers, _hiddenChestMarkers })
         {
-            texture.UVSequence = _playerMarker.UVSequence;
-            texture.UVSequenceNo = _playerMarker.UVSequenceNo;
-            texture.UVPatternNo = ChestIconPattern;
+            foreach (var texture in textures)
+            {
+                texture.UVSequence = _playerMarker.UVSequence;
+                texture.UVSequenceNo = _playerMarker.UVSequenceNo;
+                texture.UVPatternNo = ChestIconPattern;
+            }
+        }
+
+        // Dedicated hidden-chest slots keep the tint separate from ordinary chests.
+        // Apply after every GUI load, including when the prefab is already cached.
+        foreach (var texture in _hiddenChestMarkers)
+        {
+            texture.ColorPreset = _System.Guid.Empty;
+            var color = texture.Color;
+            color.r = 255;
+            color.g = 80;
+            color.b = 80;
+            color.a = 255;
+            texture.Color = color;
         }
 
         Instance.Log(
             $"Native marker nodes: player={(IsAlive(_playerMarker) ? 1 : 0)}/1, " +
             $"walls={_wallMarkers.Length}/{WallMarkerCount}, " +
             $"chests={_chestMarkers.Length}/{ChestMarkerCount}, " +
+            $"hiddenChests={_hiddenChestMarkers.Length}/{HiddenChestMarkerCount}, " +
+            $"lockedDoors={_lockedGateMarkers.Length}/{LockedGateMarkerCount}, " +
+            $"missionRanges={_missionRanges.Length}/{MissionRangeCount}, " +
             $"entrances={_entranceMarkers.Length}/{EntranceMarkerCount}, " +
             $"ladders={_ladderMarkers.Length}/{LadderMarkerCount}, " +
             $"collectibles={_collectibleMarkers.Length}/{CollectibleMarkerCount}, " +
@@ -2078,7 +2212,9 @@ public sealed class Minimap : ModBase
             rectangleSize.w = width;
             rectangleSize.h = height;
             _rectangleMask.Size = rectangleSize;
-            _rectangleMask.Visible = !isCircle && isRotated;
+            // Range circles need clipping even when north-up tiles are pre-cropped.
+            _rectangleMask.Visible = !isCircle &&
+                (isRotated || Instance._showMissions.Value);
         }
     }
 
@@ -2138,6 +2274,7 @@ public sealed class Minimap : ModBase
             if (Environment.TickCount64 >= _nextMarkerRefreshTick)
             {
                 RefreshMapObjectMarkers();
+                RefreshChestMarkers();
                 RefreshMissionMarkers();
                 _nextMarkerRefreshTick =
                     Environment.TickCount64 + MarkerRefreshMilliseconds;
@@ -2197,6 +2334,54 @@ public sealed class Minimap : ModBase
             else
             {
                 SetVisible(_chestMarkers, false);
+            }
+
+            if (Instance._showHiddenChests.Value)
+            {
+                UpdateMapObjectMarkers(
+                    HiddenChestPositions,
+                    _hiddenChestMarkers,
+                    ChestMarkerSize,
+                    playerX,
+                    playerZ,
+                    left,
+                    top,
+                    width,
+                    height,
+                    pixelsPerMeter,
+                    mapSign,
+                    cosine,
+                    sine,
+                    markerScale,
+                    isCircle);
+            }
+            else
+            {
+                SetVisible(_hiddenChestMarkers, false);
+            }
+
+            if (Instance._showLockedGates.Value)
+            {
+                UpdateMapObjectMarkers(
+                    LockedGatePositions,
+                    _lockedGateMarkers,
+                    EntranceMarkerSize,
+                    playerX,
+                    playerZ,
+                    left,
+                    top,
+                    width,
+                    height,
+                    pixelsPerMeter,
+                    mapSign,
+                    cosine,
+                    sine,
+                    markerScale,
+                    isCircle);
+            }
+            else
+            {
+                SetVisible(_lockedGateMarkers, false);
             }
 
             if (Instance._showEntrances.Value)
@@ -2295,6 +2480,10 @@ public sealed class Minimap : ModBase
                 SetVisible(_missionMarkers, false);
             }
 
+            UpdateMissionRanges(
+                playerX, playerZ, left, top, width, height,
+                pixelsPerMeter, mapSign, cosine, sine);
+
             if (Instance._showFootprints.Value)
             {
                 UpdateFootprintMarkers(
@@ -2350,7 +2539,7 @@ public sealed class Minimap : ModBase
         }
 
         var walls = new List<MarkerPosition>();
-        var chests = new List<MarkerPosition>();
+        var lockedGates = new List<MarkerPosition>();
         var entrances = new List<MarkerPosition>();
         var ladders = new List<MarkerPosition>();
         var collectibles = new List<MarkerPosition>();
@@ -2405,11 +2594,12 @@ public sealed class Minimap : ModBase
                             position.z,
                             InvasionWallIconPattern));
                         break;
-                    case app.EnvDef.MAP_OBJECT_TYPE_Fixed.SPECIAL_CHEST:
-                        chests.Add(new MarkerPosition(
-                            position.x,
-                            position.z,
-                            ChestIconPattern));
+                    case app.EnvDef.MAP_OBJECT_TYPE_Fixed.LOCKED_GATE:
+                        if (data.isEnable() && !package.isReleaseObject(data.MainID, data.SubID))
+                        {
+                            lockedGates.Add(new MarkerPosition(
+                                position.x, position.z, LockedGateIconPattern));
+                        }
                         break;
                     case app.EnvDef.MAP_OBJECT_TYPE_Fixed.LADDER:
                         ladders.Add(new MarkerPosition(
@@ -2436,7 +2626,7 @@ public sealed class Minimap : ModBase
         }
 
         WallPositions.AddRange(walls);
-        ChestPositions.AddRange(chests);
+        LockedGatePositions.AddRange(lockedGates);
         EntrancePositions.AddRange(entrances);
         LadderPositions.AddRange(ladders);
         CollectiblePositions.AddRange(collectibles);
@@ -2446,15 +2636,199 @@ public sealed class Minimap : ModBase
     {
         WallPositions.Clear();
         ChestPositions.Clear();
+        HiddenChestPositions.Clear();
+        LockedGatePositions.Clear();
+        MissionRanges.Clear();
         EntrancePositions.Clear();
         LadderPositions.Clear();
         CollectiblePositions.Clear();
         MissionPositions.Clear();
     }
 
+    private enum ChestStatus
+    {
+        Unknown,
+        Hidden,
+        Available,
+        Taken,
+    }
+
+    private static void RefreshChestMarkers()
+    {
+        ChestPositions.Clear();
+        HiddenChestPositions.Clear();
+        var map = _map;
+        if (map is null || (!Instance._showChests.Value && !Instance._showHiddenChests.Value))
+        {
+            return;
+        }
+
+        try
+        {
+            var info = API.GetManagedSingletonT<app.EnvironmentManager>()?.EnvInfoManager;
+            var packages = info?.getAllMapObjectData();
+            if (!IsAlive(info) || !IsAlive(packages))
+            {
+                return;
+            }
+
+            var contexts = new List<ChestContext>();
+            var scene = via.SceneManager.CurrentScene;
+            if (GetAddress(scene) != 0)
+            {
+                // Read current bodies, including invisible puzzle rewards.
+                // Copy values only: streaming can dispose them before the next refresh.
+                var components = scene.findComponents(app.AppGimmickBase.REFType.RuntimeType.As<_System.Type>());
+                if (IsAlive(components))
+                {
+                    for (var i = 0; i < Math.Min(components.Length, MaxChestContextsToInspect); ++i)
+                    {
+                        var component = components[i];
+                        if (!IsAlive(component)) continue;
+                        var raw = ManagedObject.ToManagedObject(GetAddress(component));
+                        var box = raw.TryAs<app.GimmickTreasureBox>();
+                        if (!IsAlive(box)) continue;
+                        var holder = box.GameContextHolder;
+                        var context = box.GimmickContext;
+                        if (!IsAlive(holder?.Info) || !IsAlive(context) ||
+                            !map.AreaFields.ContainsKey(holder.Info.AreaFixedID)) continue;
+                        contexts.Add(new ChestContext(holder.Info.AreaFixedID,
+                            context.InitPos, ReadChestStatus(context, raw)));
+                    }
+                }
+            }
+
+            var ordinary = new List<MarkerPosition>();
+            var hidden = new List<MarkerPosition>();
+            var seen = new HashSet<(app.EnvDef.AreaID_Fixed, string, string)>();
+            var inspected = 0;
+            for (var p = 0; p < packages.Count; ++p)
+            {
+                var package = packages[p];
+                if (!IsAlive(package) || !map.AreaFields.TryGetValue(package.AreaID, out var floors))
+                {
+                    continue;
+                }
+
+                // getDisplayList omits sealed chests. Read the full list only
+                // for this category, then check current context and save state.
+                var objects = package.List;
+                if (!IsAlive(objects)) continue;
+                for (var i = 0; i < objects.Count; ++i)
+                {
+                    var data = objects[i];
+                    if (!IsAlive(data) ||
+                        data.MapObjectType != app.EnvDef.MAP_OBJECT_TYPE_Fixed.SPECIAL_CHEST ||
+                        !floors.Contains(data.FieldOrder)) continue;
+                    if (++inspected > MaxChestObjectsToInspect) break;
+
+                    var position = data.Position;
+                    if (!float.IsFinite(position.x) || !float.IsFinite(position.y) ||
+                        !float.IsFinite(position.z) ||
+                        !seen.Add((package.AreaID, data.MainID.ToString(), data.SubID.ToString()))) continue;
+
+                    // The display bit can stay set after looting. The release
+                    // bit persists after a chest streams out or scripts reload.
+                    if (package.isReleaseObject(data.MainID, data.SubID)) continue;
+                    var displayed = package.isDisplayObject(data.MainID, data.SubID);
+                    var status = GetChestStatus(contexts, package.AreaID, data);
+                    if (status == ChestStatus.Taken) continue;
+                    if (status == ChestStatus.Hidden)
+                    {
+                        // A disabled story branch is not a hidden reward in
+                        // the current world. Do not reveal unrelated missions.
+                        if (data.isEnable()) hidden.Add(new MarkerPosition(
+                            position.x, position.z, ChestIconPattern));
+                    }
+                    else if (displayed || (status == ChestStatus.Available && data.isEnable()))
+                    {
+                        ordinary.Add(new MarkerPosition(position.x, position.z, ChestIconPattern));
+                    }
+                }
+                if (inspected > MaxChestObjectsToInspect) break;
+            }
+
+            ChestPositions.AddRange(ordinary);
+            HiddenChestPositions.AddRange(hidden);
+            Volatile.Write(ref _chestErrorReported, 0);
+        }
+        catch (Exception exception)
+        {
+            if (Interlocked.Exchange(ref _chestErrorReported, 1) == 0)
+            {
+                Instance.Log($"Chest marker refresh will retry: {exception}", ModLogLevel.Error);
+            }
+        }
+    }
+
+    private static ChestStatus GetChestStatus(
+        IReadOnlyList<ChestContext> contexts,
+        app.EnvDef.AreaID_Fixed area,
+        app.user_data.MapObjectData.cData data)
+    {
+        // Match the initial placement: a suspended chest can move when unlocked.
+        // Reject ambiguous matches, and include height to distinguish floors.
+        ChestStatus? result = null;
+        foreach (var candidate in contexts)
+        {
+            if (candidate.Area != area) continue;
+            var origin = candidate.Position;
+            var point = data.Position;
+            var dx = origin.x - point.x;
+            var dy = origin.y - point.y;
+            var dz = origin.z - point.z;
+            if (!float.IsFinite(dx + dy + dz) || dx * dx + dy * dy + dz * dz > 0.0625f)
+                continue;
+            if (result.HasValue) return ChestStatus.Unknown;
+            result = candidate.Status;
+        }
+        return result ?? ChestStatus.Unknown;
+    }
+
+    private readonly struct ChestContext
+    {
+        public ChestContext(app.EnvDef.AreaID_Fixed area, via.vec3 position, ChestStatus status)
+        {
+            Area = area;
+            Position = position;
+            Status = status;
+        }
+        public app.EnvDef.AreaID_Fixed Area { get; }
+        public via.vec3 Position { get; }
+        public ChestStatus Status { get; }
+    }
+
+    private static ChestStatus ReadChestStatus(app.cGimmickContextParam context, ManagedObject raw)
+    {
+        var flags = context.SaveFlagHolder;
+        if (!IsAlive(flags) || flags.Invalid) return ChestStatus.Unknown;
+        var saved = (int)flags.State;
+        if (saved == ChestTakenSaveState) return ChestStatus.Taken;
+
+        var eyeBox = raw?.TryAs<app.Gm002_006>();
+        if (IsAlive(eyeBox))
+        {
+            return eyeBox._DiscoverState == app.Gm002_006.DISCOVER_STATE.DISCOVER
+                ? ChestStatus.Available : ChestStatus.Hidden;
+        }
+
+        var floatingBox = raw?.TryAs<app.Gm002_010>();
+        if (IsAlive(floatingBox))
+        {
+            return floatingBox._FloatingState >= app.Gm002_010.FLOATING_STATE.LAND
+                ? ChestStatus.Available : ChestStatus.Hidden;
+        }
+
+        // Other mechanism-controlled chest contexts can exist before their
+        // bodies are enabled. Never infer this from a missing display flag alone.
+        return context.State == app.GimmickDef.APP_STATE.DISABLE && saved == 0
+            ? ChestStatus.Hidden : ChestStatus.Unknown;
+    }
+
     private static void RefreshMissionMarkers()
     {
         MissionPositions.Clear();
+        MissionRanges.Clear();
         if (!Instance._showMissions.Value || _map is null)
         {
             return;
@@ -2478,6 +2852,7 @@ public sealed class Minimap : ModBase
             }
 
             var positions = new List<MarkerPosition>();
+            var ranges = new List<MissionRange>();
             for (var index = 0;
                  index < Math.Min(beacons.Count, MaxMissionBeaconsToInspect);
                  ++index)
@@ -2514,6 +2889,15 @@ public sealed class Minimap : ModBase
                         continue;
                 }
 
+                // GUI060000.setupCircleIcon uses both flags. Non-range beacons
+                // also carry a positive Range, so the number alone is insufficient.
+                if (beacon.IsRange && beacon.IsSelected &&
+                    float.IsFinite(beacon.Range) && beacon.Range > 0.0f)
+                {
+                    ranges.Add(new MissionRange(
+                        position.x, position.z, beacon.Range, beacon.MissionType));
+                }
+
                 var preface = beacon.IsPreface &&
                     beacon.MissionType != app.MissionDef.MISSION_TYPE.MAIN_MISSION;
                 positions.Add(new MarkerPosition(
@@ -2524,6 +2908,7 @@ public sealed class Minimap : ModBase
             }
 
             MissionPositions.AddRange(positions);
+            MissionRanges.AddRange(ranges);
             Volatile.Write(ref _missionErrorReported, 0);
         }
         catch (Exception exception)
@@ -2534,6 +2919,71 @@ public sealed class Minimap : ModBase
             {
                 Instance.Log($"Mission marker refresh will retry: {exception}", ModLogLevel.Error);
             }
+        }
+    }
+
+    private static void UpdateMissionRanges(
+        float playerX, float playerZ, float left, float top,
+        float width, float height, float pixelsPerMeter,
+        float mapSign, float cosine, float sine)
+    {
+        var used = 0;
+        if (Instance._showMissions.Value)
+        {
+            foreach (var range in MissionRanges)
+            {
+                if (used >= _missionRanges.Length) break;
+                var sourceX = (range.X - playerX) * pixelsPerMeter * mapSign;
+                var sourceY = (range.Z - playerZ) * pixelsPerMeter * mapSign;
+                var x = left + width * 0.5f + cosine * sourceX - sine * sourceY;
+                var y = top + height * 0.5f + sine * sourceX + cosine * sourceY;
+                var radius = range.Radius * pixelsPerMeter;
+                // Native DEFAULT clip: frame = Range * 6.4 * 0.2,
+                // circle diameter = frame * 10, i.e. Range is a world radius.
+                var diameter = radius * 2.0f;
+                if (!float.IsFinite(x) || !float.IsFinite(y) ||
+                    !float.IsFinite(diameter) || diameter <= 0.0f) continue;
+
+                // Keep circles whose centers are outside the viewport if their
+                // area still intersects it. The native map mask clips the edges.
+                var dx = x - Math.Clamp(x, left, left + width);
+                var dy = y - Math.Clamp(y, top, top + height);
+                if (dx * dx + dy * dy > radius * radius) continue;
+
+                var circle = _missionRanges[used++];
+                var position = circle.Position;
+                position.x = x;
+                position.y = y;
+                position.z = 0.0f;
+                circle.Position = position;
+                var size = circle.Size;
+                size.w = diameter;
+                size.h = diameter;
+                circle.Size = size;
+                var frame = Math.Clamp(range.Radius * WorldToMapPixels * 0.2f, 0.0f, 500.0f);
+                var nativeEdge = frame <= 20.0f
+                    ? 10.0f + frame : 30.0f + (frame - 20.0f) * (50.0f / 480.0f);
+                circle.EdgeThickness = nativeEdge * pixelsPerMeter / WorldToMapPixels;
+                // Colors from GUI060000 PNL_MissionArea's MAIN/GOSSIP/SUB clips.
+                var color = circle.OuterColor;
+                color.r = range.MissionType == app.MissionDef.MISSION_TYPE.CHARACTER_MISSION
+                    ? (byte)164 : range.MissionType == app.MissionDef.MISSION_TYPE.SUB_MISSION
+                        ? (byte)47 : (byte)255;
+                color.g = range.MissionType == app.MissionDef.MISSION_TYPE.CHARACTER_MISSION
+                    ? (byte)47 : range.MissionType == app.MissionDef.MISSION_TYPE.SUB_MISSION
+                        ? (byte)180 : (byte)220;
+                color.b = range.MissionType == app.MissionDef.MISSION_TYPE.CHARACTER_MISSION
+                    ? (byte)180 : range.MissionType == app.MissionDef.MISSION_TYPE.SUB_MISSION
+                        ? (byte)179 : (byte)88;
+                color.a = 51;
+                circle.OuterColor = color;
+                circle.Visible = true;
+            }
+        }
+
+        for (var index = used; index < _missionRanges.Length; ++index)
+        {
+            _missionRanges[index].Visible = false;
         }
     }
 
@@ -2772,8 +3222,14 @@ public sealed class Minimap : ModBase
 
     private static void HideNativeMarkers()
     {
+        SetVisible(_lockedGateMarkers, false);
+        foreach (var circle in _missionRanges)
+        {
+            if (IsAlive(circle)) circle.Visible = false;
+        }
         SetVisible(_wallMarkers, false);
         SetVisible(_chestMarkers, false);
+        SetVisible(_hiddenChestMarkers, false);
         SetVisible(_entranceMarkers, false);
         SetVisible(_ladderMarkers, false);
         SetVisible(_collectibleMarkers, false);
@@ -2921,46 +3377,19 @@ public sealed class Minimap : ModBase
         var rightY = directionX;
         var rearX = centerX + directionX * CameraRearDistance * scale;
         var rearY = centerY + directionY * CameraRearDistance * scale;
-        SetFilledTriangle(
-            _cameraArrows,
-            rearX,
-            rearY,
-            directionX,
-            directionY,
-            rightX,
-            rightY,
-            CameraTipDistance - CameraRearDistance,
-            CameraHalfWidth,
-            scale);
-    }
-
-    private static void SetFilledTriangle(
-        via.gui.Rect[] parts,
-        float rearX,
-        float rearY,
-        float directionX,
-        float directionY,
-        float rightX,
-        float rightY,
-        float length,
-        float maximumHalfWidth,
-        float scale)
-    {
-        var partHeight = (length / parts.Length + TriangleFillOverlap) * scale;
-        for (var index = 0; index < parts.Length; ++index)
+        var tipX = centerX + directionX * CameraTipDistance * scale;
+        var tipY = centerY + directionY * CameraTipDistance * scale;
+        var halfWidth = CameraHalfWidth * scale;
+        var thickness = MathF.Max(1.0f, CameraArrowThickness * scale);
+        SetLine(_cameraArrows[0],
+            rearX - rightX * halfWidth, rearY - rightY * halfWidth,
+            tipX, tipY, thickness);
+        SetLine(_cameraArrows[1],
+            rearX + rightX * halfWidth, rearY + rightY * halfWidth,
+            tipX, tipY, thickness);
+        for (var index = 2; index < _cameraArrows.Length; ++index)
         {
-            var centerRatio = (index + 0.5f) / parts.Length;
-            var halfWidth = maximumHalfWidth *
-                (1.0f - (float)index / parts.Length) * scale;
-            var centerX = rearX + directionX * length * centerRatio * scale;
-            var centerY = rearY + directionY * length * centerRatio * scale;
-            SetLine(
-                parts[index],
-                centerX - rightX * halfWidth,
-                centerY - rightY * halfWidth,
-                centerX + rightX * halfWidth,
-                centerY + rightY * halfWidth,
-                partHeight);
+            _cameraArrows[index].Visible = false;
         }
     }
 
@@ -3093,6 +3522,9 @@ public sealed class Minimap : ModBase
         _cameraArrows = Array.Empty<via.gui.Rect>();
         _wallMarkers = Array.Empty<via.gui.Texture>();
         _chestMarkers = Array.Empty<via.gui.Texture>();
+        _hiddenChestMarkers = Array.Empty<via.gui.Texture>();
+        _lockedGateMarkers = Array.Empty<via.gui.Texture>();
+        _missionRanges = Array.Empty<via.gui.Circle>();
         _entranceMarkers = Array.Empty<via.gui.Texture>();
         _ladderMarkers = Array.Empty<via.gui.Texture>();
         _collectibleMarkers = Array.Empty<via.gui.Texture>();
@@ -3195,6 +3627,10 @@ public sealed class Minimap : ModBase
     {
         public MapDefinition(
             int stageKey,
+            app.EnvDef.AreaID_Fixed playerArea,
+            app.EnvDef.FIELD_ORDER_Fixed playerFloor,
+            int mapIndex,
+            int areaIndex,
             float rootX,
             float rootY,
             bool isFlipSideUp,
@@ -3204,6 +3640,10 @@ public sealed class Minimap : ModBase
             Dictionary<app.EnvDef.AreaID_Fixed, HashSet<app.EnvDef.FIELD_ORDER_Fixed>> areaFields)
         {
             StageKey = stageKey;
+            PlayerArea = playerArea;
+            PlayerFloor = playerFloor;
+            MapIndex = mapIndex;
+            AreaIndex = areaIndex;
             RootX = rootX;
             RootY = rootY;
             IsFlipSideUp = isFlipSideUp;
@@ -3214,6 +3654,10 @@ public sealed class Minimap : ModBase
         }
 
         public int StageKey { get; }
+        public app.EnvDef.AreaID_Fixed PlayerArea { get; }
+        public app.EnvDef.FIELD_ORDER_Fixed PlayerFloor { get; }
+        public int MapIndex { get; }
+        public int AreaIndex { get; }
         public float RootX { get; }
         public float RootY { get; }
         public bool IsFlipSideUp { get; }
@@ -3236,6 +3680,22 @@ public sealed class Minimap : ModBase
         public int Row { get; }
         public int Column { get; }
         public string ResourcePath { get; }
+    }
+
+    private readonly struct MissionRange
+    {
+        public MissionRange(float x, float z, float radius, app.MissionDef.MISSION_TYPE missionType)
+        {
+            X = x;
+            Z = z;
+            Radius = radius;
+            MissionType = missionType;
+        }
+
+        public float X { get; }
+        public float Z { get; }
+        public float Radius { get; }
+        public app.MissionDef.MISSION_TYPE MissionType { get; }
     }
 
     private readonly struct MarkerPosition
