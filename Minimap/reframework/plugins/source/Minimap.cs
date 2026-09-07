@@ -959,6 +959,11 @@ public sealed class Minimap : ModBase
     private const float FootprintMarkerSize = 9.0f;
     private const float MaximumOffset = 16383.0f;
 
+    // UV patterns in uvs000122.uvs, not cGUIMapListIcon.ICON_ID values.
+    private const uint ArmBreakWallIconPattern = 3;
+    private const uint EyeHideWallIconPattern = 2;
+    private const uint InvasionWallIconPattern = 8;
+
     private const int MapFixed = 0;
     private const int PlayerFixed = 1;
     private const int RectangleShape = 0;
@@ -1534,6 +1539,7 @@ public sealed class Minimap : ModBase
             !IsAlive(_circleMask) || !IsAlive(_circleBorder) ||
             !IsAlive(_rectangleMask) ||
             Array.Exists(borders, border => !IsAlive(border)) ||
+            !IsAlive(playerMarker) ||
             Array.Exists(cameraArrows, part => !IsAlive(part)) ||
             Array.Exists(slots, slot => !IsAlive(slot)))
         {
@@ -1587,10 +1593,7 @@ public sealed class Minimap : ModBase
             rectangle.MaskType = via.gui.MaskType.NonTarget;
         }
 
-        if (IsAlive(_playerMarker))
-        {
-            ConfigureMarkerTexture(_playerMarker);
-        }
+        ConfigureMarkerTexture(_playerMarker);
 
         foreach (var textures in new[]
                  {
@@ -2118,9 +2121,22 @@ public sealed class Minimap : ModBase
                 switch (data.MapObjectType)
                 {
                     case app.EnvDef.MAP_OBJECT_TYPE_Fixed.ARM_BREAK_WALL:
+                        walls.Add(new MarkerPosition(
+                            position.x,
+                            position.z,
+                            ArmBreakWallIconPattern));
+                        break;
                     case app.EnvDef.MAP_OBJECT_TYPE_Fixed.EYE_HIDE_WALL:
+                        walls.Add(new MarkerPosition(
+                            position.x,
+                            position.z,
+                            EyeHideWallIconPattern));
+                        break;
                     case app.EnvDef.MAP_OBJECT_TYPE_Fixed.INVASION_WALL:
-                        walls.Add(new MarkerPosition(position.x, position.z));
+                        walls.Add(new MarkerPosition(
+                            position.x,
+                            position.z,
+                            InvasionWallIconPattern));
                         break;
                     case app.EnvDef.MAP_OBJECT_TYPE_Fixed.SPECIAL_CHEST:
                         chests.Add(new MarkerPosition(position.x, position.z));
@@ -2178,8 +2194,10 @@ public sealed class Minimap : ModBase
                 continue;
             }
 
+            var texture = _wallMarkers[used];
+            texture.UVPatternNo = marker.IconPatternNo;
             SetMarkerTexture(
-                _wallMarkers[used],
+                texture,
                 x,
                 y,
                 markerSize,
@@ -2397,11 +2415,6 @@ public sealed class Minimap : ModBase
 
     private static void HideNativeMarkers()
     {
-        if (IsAlive(_playerMarker))
-        {
-            _playerMarker.Visible = false;
-        }
-
         SetVisible(_wallMarkers, false);
         SetVisible(_chestMarkers, false);
         SetVisible(_footprintMarkers, false);
@@ -2524,11 +2537,6 @@ public sealed class Minimap : ModBase
         float directionY,
         float scale)
     {
-        if (!IsAlive(_playerMarker))
-        {
-            return;
-        }
-
         var rotationDegrees =
             MathF.Atan2(directionY, directionX) * (180.0f / MathF.PI) + 90.0f;
         var markerSize = PlayerMarkerSize * scale;
@@ -2851,14 +2859,16 @@ public sealed class Minimap : ModBase
 
     private readonly struct MarkerPosition
     {
-        public MarkerPosition(float x, float z)
+        public MarkerPosition(float x, float z, uint iconPatternNo = 0)
         {
             X = x;
             Z = z;
+            IconPatternNo = iconPatternNo;
         }
 
         public float X { get; }
         public float Z { get; }
+        public uint IconPatternNo { get; }
     }
 
     private sealed class MapTile
