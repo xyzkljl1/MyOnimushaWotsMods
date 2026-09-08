@@ -558,6 +558,8 @@ public abstract partial class ModBase
 
 public sealed class OpenTheDoor : ModBase
 {
+    private enum DoorCategory { NormalOneWay, BreakableLock, ThreadMechanism, MaskItem, OtherSpecial }
+
     private sealed class DoorAttempt
     {
         public ulong Address;
@@ -569,27 +571,43 @@ public sealed class OpenTheDoor : ModBase
         public bool Started;
         public bool Finished;
         public long StartedAt;
+        public bool BypassMaskLock;
+        public bool MaskCameraEndRequested;
     }
 
     private const int MaximumAttempts = 16;
     // Native Gm028_001 side checks use touch sensor 1 for the visible lock side.
     private const int BreakableLockSideSensor = 1;
-    private const long AnimationTimeoutMs = 8000;
     private const long AttemptLifetimeMs = 15000;
     private static readonly OpenTheDoor Instance = new();
     private static readonly object AttemptLock = new();
     private static readonly System.Collections.Generic.Dictionary<ulong, DoorAttempt>
         Attempts = new();
+    // Lock objects can disappear after breaking. Remember the category for this
+    // door/context lifetime so closing it does not move it to another checkbox.
+    private const int MaximumRememberedBreakableDoors = 256;
+    private static readonly System.Collections.Generic.Dictionary<ulong, ulong> BreakableDoorContexts = new();
+    private static readonly System.Collections.Generic.Queue<(ulong Address, ulong Context)> BreakableDoorOrder = new();
     [ThreadStatic] private static int _unlockDepth;
     [ThreadStatic] private static ulong _openingDoor;
     [ThreadStatic] private static int _readingOriginalChecks;
     [ThreadStatic] private static System.Collections.Generic.Stack<ulong?> _doorResults;
     [ThreadStatic] private static System.Collections.Generic.Stack<ulong> _startingDoors;
     private readonly ModConfig<bool> _enabled;
+    private readonly ModConfig<bool> _ordinaryDoors;
+    private readonly ModConfig<bool> _breakableLockDoors;
+    private readonly ModConfig<bool> _threadMechanismDoors;
+    private readonly ModConfig<bool> _maskDoors;
+    private readonly ModConfig<bool> _otherSpecialDoors;
 
     private OpenTheDoor() : base("OpenTheDoor", "1.0")
     {
         _enabled = AddBoolConfig("Enable OpenTheDoor", true, key: "Enabled");
+        _ordinaryDoors = AddBoolConfig("Normal one-way Doors", true, key: "EnableOrdinaryDoors");
+        _breakableLockDoors = AddBoolConfig("Breakable lock Doors", true, key: "EnableBreakableLockDoors");
+        _threadMechanismDoors = AddBoolConfig("Thread mechanism Doors", true, key: "EnableThreadMechanismDoors");
+        _maskDoors = AddBoolConfig("Mask item Doors", true, key: "EnableMaskDoors");
+        _otherSpecialDoors = AddBoolConfig("Other special Doors", true, key: "EnableOtherSpecialDoors");
     }
 
     [PluginEntryPoint]
@@ -601,7 +619,12 @@ public sealed class OpenTheDoor : ModBase
     [PluginExitPoint]
     public static void OnUnload()
     {
-        lock (AttemptLock) Attempts.Clear();
+        lock (AttemptLock)
+        {
+            Attempts.Clear();
+            BreakableDoorContexts.Clear();
+            BreakableDoorOrder.Clear();
+        }
         _openingDoor = 0;
         _unlockDepth = 0;
         _readingOriginalChecks = 0;
@@ -638,7 +661,7 @@ public sealed class OpenTheDoor : ModBase
         {
             var door = GetManagedObject<app.GimmickDoor>(address);
             var contextAddress = AddressOf(door?.GimmickContext);
-            if (contextAddress == 0) return PreHookResult.Continue;
+            if (contextAddress == 0 || door._IsEventMode || !IsDoorEnabled(door)) return PreHookResult.Continue;
             DoorAttempt pending;
             lock (AttemptLock)
             {
@@ -694,7 +717,7 @@ public sealed class OpenTheDoor : ModBase
             {
                 var door = ResolveDoor(attempt);
                 var now = Environment.TickCount64;
-                if (door is null ||
+                if (door is null || door._IsEventMode || !IsDoorEnabled(door) ||
                     (attempt.Finished && now - attempt.StartedAt >= AttemptLifetimeMs))
                 {
                     Forget(attempt);
@@ -713,6 +736,7 @@ public sealed class OpenTheDoor : ModBase
                 }
                 if (!attempt.Started)
                 {
+                    if (!PrepareMaskOpening(door, attempt)) continue;
                     if (door.CurrentState != app.GimmickDoor.GM_DOOR_STATE.OPENING &&
                         door.CurrentState != app.GimmickDoor.GM_DOOR_STATE.OPENED)
                         OpenDoor(door, attempt);
@@ -721,25 +745,11 @@ public sealed class OpenTheDoor : ModBase
                     AnnounceReplacement(attempt);
                     Instance.Log($"Door 0x{attempt.Address:X}: opening requested ({door.CurrentState}).");
                 }
-                if (!attempt.Finished)
+                // Let the native animation finish regardless of elapsed time.
+                if (!attempt.Finished && door.CurrentState == app.GimmickDoor.GM_DOOR_STATE.OPENED)
                 {
-                    // The normal state machine handles motion, saved-open state,
-                    // collision and path blockade. A stalled animation gets its
-                    // own built-in final-state operation, never a raw state write.
-                    // Recover unfinished OPENING before expiring tracking. Wall
-                    // time can jump past both deadlines while the game is paused.
-                    // Never force an intentional close back open on an old timer.
-                    if (door.CurrentState == app.GimmickDoor.GM_DOOR_STATE.OPENING &&
-                        now - attempt.StartedAt >= AnimationTimeoutMs)
-                    {
-                        Instance.Log($"Door 0x{attempt.Address:X}: finishing a stalled opening.");
-                        door.forceOpen();
-                    }
-                    if (door.CurrentState == app.GimmickDoor.GM_DOOR_STATE.OPENED)
-                    {
-                        attempt.Finished = true;
-                        Instance.Log($"Door 0x{attempt.Address:X}: reached OPENED.");
-                    }
+                    attempt.Finished = true;
+                    Instance.Log($"Door 0x{attempt.Address:X}: reached OPENED.");
                 }
             }
             catch (Exception exception)
@@ -756,8 +766,85 @@ public sealed class OpenTheDoor : ModBase
     // 1 = opened, 2 = closed after unlocking; 0/3 do not mean unlocked.
     // This also works after the scene recreates the door or a save is loaded.
     private static bool HasUnlockedSave(app.GimmickDoor door) =>
-        Instance._enabled.Value && door?.GimmickContext?.SaveFlagHolder is not null &&
+        IsDoorEnabled(door) && door?.GimmickContext?.SaveFlagHolder is not null &&
         door.isUnlockSaveState();
+
+    private static bool IsDoorEnabled(app.GimmickDoor door)
+    {
+        if (!Instance._enabled.Value || door?.GimmickContext is null) return false;
+        return GetDoorCategory(door) switch
+        {
+            DoorCategory.NormalOneWay => Instance._ordinaryDoors.Value,
+            DoorCategory.BreakableLock => Instance._breakableLockDoors.Value,
+            DoorCategory.ThreadMechanism => Instance._threadMechanismDoors.Value,
+            DoorCategory.MaskItem => Instance._maskDoors.Value,
+            _ => Instance._otherSpecialDoors.Value,
+        };
+    }
+
+    private static DoorCategory GetDoorCategory(app.GimmickDoor door)
+    {
+        // Unique door behavior takes priority over attached locks and messages.
+        if (GetMaskDoor(door) is not null) return DoorCategory.MaskItem;
+        if (GetThreadDoor(door) is not null) return DoorCategory.ThreadMechanism;
+        var address = AddressOf(door);
+        var context = AddressOf(door.GimmickContext);
+        var breakable = GetDoorLock(door)?.TryAs<app.Gm028_001>() is not null;
+        lock (AttemptLock)
+        {
+            if (BreakableDoorContexts.TryGetValue(address, out var previousContext))
+            {
+                if (previousContext == context) return DoorCategory.BreakableLock;
+                BreakableDoorContexts.Remove(address);
+            }
+            if (breakable)
+            {
+                BreakableDoorContexts[address] = context;
+                BreakableDoorOrder.Enqueue((address, context));
+                while (BreakableDoorOrder.Count > MaximumRememberedBreakableDoors)
+                {
+                    var oldest = BreakableDoorOrder.Dequeue();
+                    if (BreakableDoorContexts.TryGetValue(oldest.Address, out var remembered) && remembered == oldest.Context)
+                        BreakableDoorContexts.Remove(oldest.Address);
+                }
+                return DoorCategory.BreakableLock;
+            }
+        }
+        // Explicit ordinary implementations; do not classify a new derived type
+        // as ordinary merely because it also displays the generic refusal text.
+        var name = ManagedObject.ToManagedObject(address)?.GetTypeDefinition()?.FullName;
+        return name is "app.GimmickDoor" or "app.Gm052" or "app.Gm052_000" or
+            "app.Gm052_001" or "app.Gm052_003"
+            ? DoorCategory.NormalOneWay : DoorCategory.OtherSpecial;
+    }
+
+    // A mask inspection owns camera fades, UI and per-frame player visibility.
+    // endCamera requests its native cleanup; changing _CameraState directly would
+    // skip that cleanup. Open only after it has returned to DEFAULT.
+    private static bool PrepareMaskOpening(app.GimmickDoor door, DoorAttempt attempt)
+    {
+        var mask = GetMaskDoor(door);
+        if (mask is null) return true;
+        if (mask._CameraState == app.Gm053_001.CAMERA_STATE.GET_ITEM_CAMERA ||
+            (mask._CameraState != app.Gm053_001.CAMERA_STATE.DEFAULT && !attempt.BypassMaskLock))
+        {
+            Forget(attempt);
+            return false;
+        }
+        if (mask._CameraState == app.Gm053_001.CAMERA_STATE.NO_ITEM_CAMERA)
+        {
+            if (!attempt.MaskCameraEndRequested)
+            {
+                mask.endCamera();
+                attempt.MaskCameraEndRequested = true;
+                Instance.Log($"Door 0x{attempt.Address:X}: ending the mask inspection before opening.");
+            }
+        }
+        else if (mask._CameraState == app.Gm053_001.CAMERA_STATE.DEFAULT && !mask._IsPlDrawOff)
+            return true;
+
+        return false;
+    }
 
     private enum DoorCheck { Locked, Openable, OpenIcon, DisabledIcon, Reaction }
 
@@ -767,8 +854,8 @@ public sealed class OpenTheDoor : ModBase
         try
         {
             var door = args.Length > 1 ? GetManagedObject<app.GimmickDoor>(args[1]) : null;
-            if (_readingOriginalChecks == 0 && Instance._enabled.Value &&
-                door?.GimmickContext is not null && !door._IsEventMode &&
+            if (_readingOriginalChecks == 0 && IsDoorEnabled(door) &&
+                door?.GimmickContext is not null && !door._IsEventMode && !HasActiveMaskCamera(door) &&
                 (HasUnlockedSave(door) || (check != DoorCheck.Locked && HasIntactBreakableLock(door))))
             {
                 // An intact breakable lock disables the button before any refusal
@@ -870,20 +957,45 @@ public sealed class OpenTheDoor : ModBase
         try
         {
             var door = args.Length > 1 ? GetManagedObject<app.GimmickDoor>(args[1]) : null;
-            if (Instance._enabled.Value && door?.GimmickContext is not null &&
-                !door._IsEventMode && door.CurrentState == app.GimmickDoor.GM_DOOR_STATE.CLOSED)
+            if (IsDoorEnabled(door) && door?.GimmickContext is not null &&
+                !door._IsEventMode && !HasActiveMaskCamera(door) &&
+                door.CurrentState == app.GimmickDoor.GM_DOOR_STATE.CLOSED)
             {
                 var savedUnlocked = HasUnlockedSave(door);
                 // This mechanism can be ENABLE with its private lock still set.
                 // Native onSuccess then fails silently, without calling the refusal
                 // message hook. Recover only the door the player is interacting with.
-                if (savedUnlocked || HasIntactBreakableLock(door) || GetThreadDoor(door)?._IsUnLock == false)
+                if (savedUnlocked || HasIntactBreakableLock(door) || GetThreadDoor(door)?._IsUnLock == false ||
+                    GetMaskDoor(door)?.checkUniqueLock() == true)
                     QueueOpening(door);
             }
         }
         catch (Exception exception)
         {
             Instance.LogErrorOnce("Failed to reopen the saved door", exception);
+        }
+        return PreHookResult.Continue;
+    }
+
+    // The derived success method starts GET_ITEM_CAMERA even after its base has
+    // queued a saved-unlocked reopen. Skip that extra camera on normal repeats.
+    // On the first missing-item interaction let the base capture any real refusal
+    // text, then finish the native NO_ITEM_CAMERA cleanup before the deferred open.
+    [MethodHook(typeof(app.Gm053_001), "onGmInteract_Success", MethodHookType.Pre)]
+    public static PreHookResult BeforeMaskDoorInteraction(Span<ulong> args)
+    {
+        if (!Instance._enabled.Value || args.Length < 2) return PreHookResult.Continue;
+        try
+        {
+            var door = GetManagedObject<app.GimmickDoor>(args[1]);
+            if (door?.GimmickContext is not null && !door._IsEventMode &&
+                !HasActiveMaskCamera(door) && HasUnlockedSave(door) &&
+                door.CurrentState == app.GimmickDoor.GM_DOOR_STATE.CLOSED)
+                return QueueOpening(door) ? PreHookResult.Skip : PreHookResult.Continue;
+        }
+        catch (Exception exception)
+        {
+            Instance.Log($"Failed to handle mask door 0x{args[1]:X}: {exception}", ModLogLevel.Error);
         }
         return PreHookResult.Continue;
     }
@@ -897,6 +1009,8 @@ public sealed class OpenTheDoor : ModBase
         try
         {
             var savedDoor = GetManagedObject<app.GimmickDoor>(args[1]);
+            if (!IsDoorEnabled(savedDoor) || savedDoor?._IsEventMode == true || HasActiveMaskCamera(savedDoor))
+                return PreHookResult.Continue;
             var savedUnlocked = HasUnlockedSave(savedDoor);
             if (savedDoor?.GimmickContext is not null && !savedDoor._IsEventMode &&
                 (savedUnlocked || (savedDoor.CurrentState == app.GimmickDoor.GM_DOOR_STATE.CLOSED &&
@@ -927,6 +1041,7 @@ public sealed class OpenTheDoor : ModBase
     private static bool QueueOpening(app.GimmickDoor door, string replacementMessage = null,
         bool hasOriginalMessage = false)
     {
+        if (!IsDoorEnabled(door)) return false;
         var address = AddressOf(door);
         var contextAddress = AddressOf(door.GimmickContext);
         lock (AttemptLock)
@@ -945,10 +1060,12 @@ public sealed class OpenTheDoor : ModBase
                 return true;
             }
             if (Attempts.Count >= MaximumAttempts && !Attempts.ContainsKey(address)) return false;
+            if (door._IsEventMode || HasActiveMaskCamera(door)) return false;
             var silentOpening = IsSilentOpening(door);
             Attempts[address] = new DoorAttempt
             {
                 Address = address, ContextAddress = contextAddress,
+                BypassMaskLock = !HasUnlockedSave(door) && GetMaskDoor(door)?.checkUniqueLock() == true,
                 SilentOpening = silentOpening,
                 HasOriginalMessage = hasOriginalMessage,
                 ReplacementMessage = silentOpening ? null :
@@ -1007,6 +1124,17 @@ public sealed class OpenTheDoor : ModBase
 
     private static bool HasIntactBreakableLock(app.GimmickDoor door) =>
         GetDoorLock(door)?.TryAs<app.Gm028_001>()?.isLocked() == true;
+
+    private static app.Gm053_001 GetMaskDoor(app.GimmickDoor door)
+    {
+        var address = AddressOf(door);
+        return address != 0 && ManagedObject.IsManagedObject(address)
+            ? ManagedObject.ToManagedObject(address)?.TryAs<app.Gm053_001>() : null;
+    }
+
+    private static bool HasActiveMaskCamera(app.GimmickDoor door) =>
+        GetMaskDoor(door) is { } mask &&
+        (mask._CameraState != app.Gm053_001.CAMERA_STATE.DEFAULT || mask._IsPlDrawOff);
 
     private static app.Gm053_002 GetThreadDoor(app.GimmickDoor door)
     {
@@ -1118,7 +1246,7 @@ public sealed class OpenTheDoor : ModBase
         try { Announce(message); }
         catch (Exception exception)
         {
-            // A UI failure must not discard the door's animation watchdog.
+            // A UI failure must not discard native opening-completion tracking.
             Instance.Log($"Failed to replace the message for door 0x{attempt.Address:X}: {exception}", ModLogLevel.Error);
         }
     }
