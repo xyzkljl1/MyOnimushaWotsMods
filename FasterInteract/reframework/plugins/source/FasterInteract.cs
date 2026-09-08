@@ -571,14 +571,16 @@ public sealed class FasterInteract : ModBase
         OriginalDoorLayerSpeeds = new();
     private static readonly System.Collections.Generic.Dictionary<ulong, float>
         OriginalTreasureBoxLayerSpeeds = new();
-    private static readonly System.Collections.Generic.Dictionary<ulong, float>
-        LastElevatorPositions = new();
     [ThreadStatic]
     private static ulong _enteringPlayerAction;
     [ThreadStatic]
     private static ulong _updatingElevator;
     [ThreadStatic]
     private static float _originalElevatorMoveSpeed;
+    [ThreadStatic]
+    private static ulong _updatingHorizontalElevator;
+    [ThreadStatic]
+    private static float _originalHorizontalElevatorMoveSpeed;
     [ThreadStatic]
     private static ulong _gettingLadderMoveSpeed;
     private static ulong _modifiedAction;
@@ -592,10 +594,10 @@ public sealed class FasterInteract : ModBase
     private readonly ModConfig<bool> _oniWallEnabled;
     private readonly ModConfig<bool> _doorEnabled;
     private readonly ModConfig<bool> _treasureBoxEnabled;
-    private readonly ModConfig<bool> _elevatorDescentEnabled;
+    private readonly ModConfig<bool> _elevatorEnabled;
     private readonly ModConfig<bool> _ladderEnabled;
 
-    private FasterInteract() : base("FasterInteract", "1.2")
+    private FasterInteract() : base("FasterInteract", "1.3")
     {
         _interactionSpeed = AddFloatConfig(
             "Interaction speed",
@@ -616,8 +618,8 @@ public sealed class FasterInteract : ModBase
             "Enable treasure chest acceleration",
             true,
             key: "TreasureBoxEnabled");
-        _elevatorDescentEnabled = AddBoolConfig(
-            "Enable elevator descent acceleration",
+        _elevatorEnabled = AddBoolConfig(
+            "Enable elevator acceleration",
             true,
             key: "ElevatorDescentEnabled");
         _ladderEnabled = AddBoolConfig(
@@ -638,9 +640,9 @@ public sealed class FasterInteract : ModBase
         RestoreActiveInteraction();
         RestoreDoorLayerSpeeds();
         RestoreTreasureBoxLayerSpeeds();
-        LastElevatorPositions.Clear();
         _enteringPlayerAction = 0;
         _updatingElevator = 0;
+        _updatingHorizontalElevator = 0;
         _gettingLadderMoveSpeed = 0;
         Instance.UnloadMod();
     }
@@ -741,38 +743,26 @@ public sealed class FasterInteract : ModBase
         _updatingElevator = 0;
         try
         {
-            if (!Instance._elevatorDescentEnabled.Value || args.Length <= 1)
+            if (!Instance._elevatorEnabled.Value || args.Length <= 1)
             {
                 return PreHookResult.Continue;
             }
 
             var elevator = GetManagedObject<app.GimmickElevator>(args[1]);
-            var transform = elevator?.GameObject?.Transform;
             if (elevator is null ||
-                transform is null ||
                 elevator.MoveState != app.GimmickElevator.MOVE_STATE.MOVE)
             {
                 return PreHookResult.Continue;
             }
 
-            var address = args[1];
-            var positionY = transform.Position.y;
-            var isDescending = LastElevatorPositions.TryGetValue(
-                address,
-                out var previousY) &&
-                positionY < previousY - 0.0001f;
-            LastElevatorPositions[address] = positionY;
-            if (isDescending)
-            {
-                _updatingElevator = address;
-                _originalElevatorMoveSpeed = elevator._MoveSpeed;
-                elevator._MoveSpeed =
-                    _originalElevatorMoveSpeed * GetInteractionSpeed();
-            }
+            _updatingElevator = args[1];
+            _originalElevatorMoveSpeed = elevator._MoveSpeed;
+            elevator._MoveSpeed =
+                _originalElevatorMoveSpeed * GetInteractionSpeed();
         }
         catch (Exception exception)
         {
-            Instance.LogErrorOnce("Failed to accelerate elevator descent", exception);
+            Instance.LogErrorOnce("Failed to accelerate elevator", exception);
         }
 
         return PreHookResult.Continue;
@@ -802,6 +792,102 @@ public sealed class FasterInteract : ModBase
         catch (Exception exception)
         {
             Instance.LogErrorOnce("Failed to restore elevator speed", exception);
+        }
+    }
+
+    [MethodHook(
+        typeof(app.Gm032_000),
+        "getMoveSpeed",
+        MethodHookType.Post)]
+    public static void AfterGetOverriddenElevatorMoveSpeed(ref ulong returnValue)
+    {
+        if (!Instance._elevatorEnabled.Value)
+        {
+            return;
+        }
+
+        try
+        {
+            var moveSpeed = BitConverter.UInt32BitsToSingle((uint)returnValue);
+            if (float.IsFinite(moveSpeed) && moveSpeed > 0.0f)
+            {
+                var adjustedSpeed = moveSpeed * GetInteractionSpeed();
+                returnValue =
+                    (returnValue & ~((ulong)uint.MaxValue)) |
+                    BitConverter.SingleToUInt32Bits(adjustedSpeed);
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to accelerate overridden elevator speed",
+                exception);
+        }
+    }
+
+    [MethodHook(
+        typeof(app.Gm032_002),
+        "updateMoveState",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeHorizontalElevatorMoveUpdate(
+        Span<ulong> args)
+    {
+        _updatingHorizontalElevator = 0;
+        try
+        {
+            if (!Instance._elevatorEnabled.Value || args.Length <= 1)
+            {
+                return PreHookResult.Continue;
+            }
+
+            var elevator = GetManagedObject<app.Gm032_002>(args[1]);
+            if (elevator is null ||
+                elevator._MoveState != app.Gm032_002.MOVE_STATE.MOVE)
+            {
+                return PreHookResult.Continue;
+            }
+
+            _updatingHorizontalElevator = args[1];
+            _originalHorizontalElevatorMoveSpeed = elevator._MoveSpeed;
+            elevator._MoveSpeed =
+                _originalHorizontalElevatorMoveSpeed * GetInteractionSpeed();
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to accelerate horizontal elevator",
+                exception);
+        }
+
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.Gm032_002),
+        "updateMoveState",
+        MethodHookType.Post)]
+    public static void AfterHorizontalElevatorMoveUpdate(ref ulong returnValue)
+    {
+        var elevatorAddress = _updatingHorizontalElevator;
+        _updatingHorizontalElevator = 0;
+        if (elevatorAddress == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var elevator = GetManagedObject<app.Gm032_002>(elevatorAddress);
+            if (elevator is not null)
+            {
+                elevator._MoveSpeed = _originalHorizontalElevatorMoveSpeed;
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to restore horizontal elevator speed",
+                exception);
         }
     }
 
