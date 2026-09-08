@@ -609,7 +609,7 @@ public sealed class OpenTheDoor : ModBase
     private readonly ModConfig<bool> _maskDoors;
     private readonly ModConfig<bool> _otherSpecialDoors;
 
-    private OpenTheDoor() : base("OpenTheDoor", "1.0")
+    private OpenTheDoor() : base("OpenTheDoor", "1.1")
     {
         _ordinaryDoors = AddBoolConfig("Normal one-way Doors", true, key: "EnableOrdinaryDoors");
         _breakableLockDoors = AddBoolConfig("Breakable lock Doors", true, key: "EnableBreakableLockDoors");
