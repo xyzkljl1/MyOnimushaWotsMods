@@ -586,14 +586,15 @@ public sealed class FasterInteract : ModBase
     private static float _originalHorizontalElevatorMoveSpeed;
     [ThreadStatic]
     private static ulong _gettingLadderMoveSpeed;
-    [ThreadStatic]
-    private static ulong _updatingDogInteractionAction;
     private static ulong _modifiedAction;
-    private static ulong _preparedDogInteractionAction;
     private static ulong _acceleratedDoor;
     private static ulong _acceleratedTreasureBox;
     private static ulong _acceleratedDog;
     private static float _originalDogCompletionDelayLimit;
+    private static bool _hasOriginalDogRootTransRate;
+    private static float _originalDogRootTransRateX;
+    private static float _originalDogRootTransRateY;
+    private static float _originalDogRootTransRateZ;
     private static InteractionFeature _activeFeature;
     private static bool _originalOverrideEnabled;
     private static float _originalOverrideSpeed;
@@ -658,8 +659,6 @@ public sealed class FasterInteract : ModBase
         _updatingElevator = 0;
         _updatingHorizontalElevator = 0;
         _gettingLadderMoveSpeed = 0;
-        _updatingDogInteractionAction = 0;
-        _preparedDogInteractionAction = 0;
         RestoreDogCompletionDelay();
         Instance.UnloadMod();
     }
@@ -667,13 +666,13 @@ public sealed class FasterInteract : ModBase
     [Callback(typeof(UpdateBehavior), CallbackType.Post)]
     public static void OnUpdate()
     {
-        if (_modifiedAction == 0)
-        {
-            return;
-        }
-
         try
         {
+            if (_modifiedAction == 0)
+            {
+                return;
+            }
+
             var character = API.GetManagedSingletonT<app.PlayerManager>()
                 ?.getControllingPlayerInfo()?.Character;
             var baseAction = (character?.BaseCurrentAction as IProxyable)
@@ -954,13 +953,11 @@ public sealed class FasterInteract : ModBase
         MethodHookType.Pre)]
     public static PreHookResult BeforeDogInteractionUpdate(Span<ulong> args)
     {
-        _updatingDogInteractionAction = args.Length > 1 ? args[1] : 0;
         try
         {
             if (args.Length > 1)
             {
                 ApplyPlayerActionSpeed(args[1], applyMotionLayers: true);
-                PrepareDogInteractionPosition(args[1]);
             }
         }
         catch (Exception exception)
@@ -971,32 +968,6 @@ public sealed class FasterInteract : ModBase
         }
 
         return PreHookResult.Continue;
-    }
-
-    [MethodHook(
-        typeof(app.PlayerCommonAction.cPetDogBase),
-        "detailUpdate",
-        MethodHookType.Post)]
-    public static void AfterDogInteractionUpdate(ref ulong returnValue)
-    {
-        var actionAddress = _updatingDogInteractionAction;
-        _updatingDogInteractionAction = 0;
-        if (actionAddress != _modifiedAction ||
-            _activeFeature != InteractionFeature.DogInteraction)
-        {
-            return;
-        }
-
-        try
-        {
-            StabilizeDogInteractionPosition(actionAddress);
-        }
-        catch (Exception exception)
-        {
-            Instance.LogErrorOnce(
-                "Failed to stabilize dog interaction position",
-                exception);
-        }
     }
 
     [MethodHook(
@@ -1231,15 +1202,23 @@ public sealed class FasterInteract : ModBase
             {
                 action._IsDisableCameraAutoFollowRotate = true;
                 BeginDogCollectionAcceleration();
+                BeginDogRootTranslationSuppression();
             }
         }
 
         var speed = GetInteractionSpeed();
         action._UseOverrideMotionSpeed = true;
         action._OverrideMotionSpeed = speed;
+        if (feature == InteractionFeature.DogInteraction)
+        {
+            SuppressDogRootTranslation();
+        }
+
         if (applyMotionLayers)
         {
-            ApplyPlayerLayerSpeeds(speed);
+            ApplyPlayerLayerSpeeds(
+                speed,
+                primaryLayerOnly: feature == InteractionFeature.DogInteraction);
             if (feature == InteractionFeature.Door)
             {
                 ApplyGimmickLayerSpeeds(
@@ -1358,7 +1337,9 @@ public sealed class FasterInteract : ModBase
         return 0;
     }
 
-    private static void ApplyPlayerLayerSpeeds(float multiplier)
+    private static void ApplyPlayerLayerSpeeds(
+        float multiplier,
+        bool primaryLayerOnly)
     {
         var motion = API.GetManagedSingletonT<app.PlayerManager>()
             ?.getControllingPlayerInfo()?.Character?.Motion?._Params?.MotionComponent;
@@ -1369,10 +1350,16 @@ public sealed class FasterInteract : ModBase
 
         ApplyLayerSpeeds(
             motion,
-            motion.getLayerCount(),
+            primaryLayerOnly ? Math.Min(motion.getLayerCount(), 1u) :
+                motion.getLayerCount(),
             isPrivate: false,
             multiplier,
             OriginalPlayerLayerSpeeds);
+        if (primaryLayerOnly)
+        {
+            return;
+        }
+
         ApplyLayerSpeeds(
             motion,
             motion.getPrivateLayerCount(),
@@ -1419,71 +1406,58 @@ public sealed class FasterInteract : ModBase
         RestoreLayerSpeeds(OriginalPlayerLayerSpeeds);
     }
 
-    private static void PrepareDogInteractionPosition(ulong actionAddress)
+    private static void BeginDogRootTranslationSuppression()
     {
-        if (actionAddress == _preparedDogInteractionAction ||
-            actionAddress != _modifiedAction ||
-            _activeFeature != InteractionFeature.DogInteraction)
+        var entity = API.GetManagedSingletonT<app.PlayerManager>()
+            ?.getControllingPlayerInfo()?.CharacterEntity;
+        var rate = entity?.ActionRootTransRate;
+        if (rate is null)
         {
             return;
         }
 
-        var action = GetManagedObject<
-            app.PlayerCommonAction.cInteractEnvUnitBase>(actionAddress);
-        var target = action?._InterpolatePos;
-        var transform = API.GetManagedSingletonT<app.PlayerManager>()
-            ?.getControllingPlayerInfo()?.Character?.GameObject?.Transform;
-        if (target is null || transform is null ||
-            !float.IsFinite(target.x) ||
-            !float.IsFinite(target.y) ||
-            !float.IsFinite(target.z))
-        {
-            return;
-        }
-
-        var current = transform.Position;
-        if (current is null)
-        {
-            return;
-        }
-
-        var x = target.x - current.x;
-        var y = target.y - current.y;
-        var z = target.z - current.z;
-        if (x * x + y * y + z * z <= 16.0f)
-        {
-            current.x = target.x;
-            current.z = target.z;
-            transform.Position = current;
-            action!._StartPos = current;
-            _preparedDogInteractionAction = actionAddress;
-        }
+        _originalDogRootTransRateX = rate.x;
+        _originalDogRootTransRateY = rate.y;
+        _originalDogRootTransRateZ = rate.z;
+        _hasOriginalDogRootTransRate = true;
+        SuppressDogRootTranslation();
     }
 
-    private static void StabilizeDogInteractionPosition(ulong actionAddress)
+    private static void SuppressDogRootTranslation()
     {
-        var action = GetManagedObject<
-            app.PlayerCommonAction.cInteractEnvUnitBase>(actionAddress);
-        var target = action?._InterpolatePos;
-        var transform = API.GetManagedSingletonT<app.PlayerManager>()
-            ?.getControllingPlayerInfo()?.Character?.GameObject?.Transform;
-        var current = transform?.Position;
-        if (target is null || transform is null || current is null ||
-            !float.IsFinite(target.x) || !float.IsFinite(target.z))
+        var entity = API.GetManagedSingletonT<app.PlayerManager>()
+            ?.getControllingPlayerInfo()?.CharacterEntity;
+        var rate = entity?.ActionRootTransRate;
+        if (rate is null)
         {
             return;
         }
 
-        var x = target.x - current.x;
-        var z = target.z - current.z;
-        if (x * x + z * z > 16.0f)
+        rate.x = 0.0f;
+        rate.z = 0.0f;
+        entity!.ActionRootTransRate = rate;
+    }
+
+    private static void RestoreDogRootTranslation()
+    {
+        if (!_hasOriginalDogRootTransRate)
         {
             return;
         }
 
-        current.x = target.x;
-        current.z = target.z;
-        transform.Position = current;
+        _hasOriginalDogRootTransRate = false;
+        var entity = API.GetManagedSingletonT<app.PlayerManager>()
+            ?.getControllingPlayerInfo()?.CharacterEntity;
+        var rate = entity?.ActionRootTransRate;
+        if (rate is null)
+        {
+            return;
+        }
+
+        rate.x = _originalDogRootTransRateX;
+        rate.y = _originalDogRootTransRateY;
+        rate.z = _originalDogRootTransRateZ;
+        entity!.ActionRootTransRate = rate;
     }
 
     private static void BeginDogCollectionAcceleration()
@@ -1703,6 +1677,7 @@ public sealed class FasterInteract : ModBase
 
     private static void RestoreActiveInteraction()
     {
+        RestoreDogRootTranslation();
         RestorePlayerLayerSpeeds();
         RestoreModifiedAction();
         _activeFeature = InteractionFeature.None;
@@ -1712,11 +1687,6 @@ public sealed class FasterInteract : ModBase
     {
         var actionAddress = _modifiedAction;
         _modifiedAction = 0;
-        if (_preparedDogInteractionAction == actionAddress)
-        {
-            _preparedDogInteractionAction = 0;
-        }
-
         if (!ManagedObject.IsManagedObject(actionAddress))
         {
             return;
