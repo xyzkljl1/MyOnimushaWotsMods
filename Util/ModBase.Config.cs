@@ -290,12 +290,11 @@ public abstract partial class ModBase
     protected bool DrawButton(string label, string id) =>
         Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
 
-    // A shared four-second orange/blue cycle, evaluated only while drawing a title.
+    // A shared two-second orange/blue cycle, evaluated only while drawing a title.
     // Presentation never changes the stored configuration value or its dirty state.
     private static System.Numerics.Vector4 GetAnimatedTitleColor()
     {
-        var phase = (float)(Hexa.NET.ImGui.ImGui.GetTime() % 4.0) *
-                    (System.MathF.PI / 2.0f);
+        var phase = (float)(Hexa.NET.ImGui.ImGui.GetTime() % 2.0) * System.MathF.PI;
         var blend = 0.5f - 0.5f * System.MathF.Cos(phase);
         return System.Numerics.Vector4.Lerp(
             new System.Numerics.Vector4(1.0f, 0.65f, 0.2f, 1.0f),
