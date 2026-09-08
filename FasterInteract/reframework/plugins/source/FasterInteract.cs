@@ -569,6 +569,8 @@ public sealed class FasterInteract : ModBase
     private static readonly System.Collections.Generic.Dictionary<ulong, float>
         OriginalPlayerLayerSpeeds = new();
     private static readonly System.Collections.Generic.Dictionary<ulong, float>
+        OriginalOniWallLayerSpeeds = new();
+    private static readonly System.Collections.Generic.Dictionary<ulong, float>
         OriginalDoorLayerSpeeds = new();
     private static readonly System.Collections.Generic.Dictionary<ulong, float>
         OriginalTreasureBoxLayerSpeeds = new();
@@ -587,6 +589,7 @@ public sealed class FasterInteract : ModBase
     [ThreadStatic]
     private static ulong _gettingLadderMoveSpeed;
     private static ulong _modifiedAction;
+    private static ulong _acceleratedOniWall;
     private static ulong _acceleratedDoor;
     private static ulong _acceleratedTreasureBox;
     private static ulong _acceleratedDog;
@@ -608,7 +611,7 @@ public sealed class FasterInteract : ModBase
     private readonly ModConfig<bool> _dogInteractionEnabled;
     private readonly ModConfig<bool> _ladderEnabled;
 
-    private FasterInteract() : base("FasterInteract", "1.4")
+    private FasterInteract() : base("FasterInteract", "1.5")
     {
         _interactionSpeed = AddFloatConfig(
             "Interaction speed",
@@ -653,6 +656,7 @@ public sealed class FasterInteract : ModBase
     public static void OnUnload()
     {
         RestoreActiveInteraction();
+        RestoreOniWallLayerSpeeds();
         RestoreDoorLayerSpeeds();
         RestoreTreasureBoxLayerSpeeds();
         _enteringPlayerAction = 0;
@@ -724,6 +728,57 @@ public sealed class FasterInteract : ModBase
         catch (Exception exception)
         {
             Instance.LogErrorOnce("Failed to update door speed", exception);
+        }
+
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(typeof(app.Gm042), "doUpdateBegin", MethodHookType.Pre)]
+    public static PreHookResult BeforeOniWallUpdate(Span<ulong> args)
+    {
+        try
+        {
+            if (args.Length <= 1)
+            {
+                return PreHookResult.Continue;
+            }
+
+            var address = args[1];
+            var wall = GetManagedObject<app.Gm042>(address);
+            if (wall is null)
+            {
+                if (address == _acceleratedOniWall)
+                {
+                    RestoreOniWallLayerSpeeds();
+                }
+
+                return PreHookResult.Continue;
+            }
+
+            if (Instance._oniWallEnabled.Value &&
+                IsOniWallBreaking(wall._State))
+            {
+                if (address != _acceleratedOniWall)
+                {
+                    RestoreOniWallLayerSpeeds();
+                    _acceleratedOniWall = address;
+                }
+
+                ApplyGimmickLayerSpeeds(
+                    address,
+                    GetInteractionSpeed(),
+                    OriginalOniWallLayerSpeeds);
+            }
+            else if (address == _acceleratedOniWall)
+            {
+                RestoreOniWallLayerSpeeds();
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to update Oni wall break speed",
+                exception);
         }
 
         return PreHookResult.Continue;
@@ -1316,6 +1371,10 @@ public sealed class FasterInteract : ModBase
         typeName == "app.PlayerBasicAction.cDemonTendonInterruptionEnd" ||
         typeName == "app.PlayerBasicAction.cDemonTendonInterruption";
 
+    private static bool IsOniWallBreaking(app.Gm042.STATE state) =>
+        state == app.Gm042.STATE.OPEN ||
+        state == app.Gm042.STATE.FINISH;
+
     private static ulong GetActionGimmickAddress(
         ManagedObject actionObject,
         app.PlayerCommonAction.cInteractGimmickBase action)
@@ -1404,6 +1463,12 @@ public sealed class FasterInteract : ModBase
     private static void RestorePlayerLayerSpeeds()
     {
         RestoreLayerSpeeds(OriginalPlayerLayerSpeeds);
+    }
+
+    private static void RestoreOniWallLayerSpeeds()
+    {
+        RestoreLayerSpeeds(OriginalOniWallLayerSpeeds);
+        _acceleratedOniWall = 0;
     }
 
     private static void BeginDogRootTranslationSuppression()
