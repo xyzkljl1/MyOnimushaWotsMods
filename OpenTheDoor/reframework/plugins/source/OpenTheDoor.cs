@@ -575,6 +575,13 @@ public sealed class OpenTheDoor : ModBase
         public bool MaskCameraEndRequested;
     }
 
+    private sealed class BarrierAttempt
+    {
+        public ulong Address;
+        public ulong ContextAddress;
+        public string ReplacementMessage;
+    }
+
     private const int MaximumAttempts = 16;
     // Native Gm028_001 side checks use touch sensor 1 for the visible lock side.
     private const int BreakableLockSideSensor = 1;
@@ -583,6 +590,8 @@ public sealed class OpenTheDoor : ModBase
     private static readonly object AttemptLock = new();
     private static readonly System.Collections.Generic.Dictionary<ulong, DoorAttempt>
         Attempts = new();
+    private static readonly System.Collections.Generic.Dictionary<ulong, BarrierAttempt>
+        BarrierAttempts = new();
     // Lock objects can disappear after breaking. Remember the category for this
     // door/context lifetime so closing it does not move it to another checkbox.
     private const int MaximumRememberedBreakableDoors = 256;
@@ -598,6 +607,7 @@ public sealed class OpenTheDoor : ModBase
     private readonly ModConfig<bool> _threadMechanismDoors;
     private readonly ModConfig<bool> _maskDoors;
     private readonly ModConfig<bool> _otherSpecialDoors;
+    private readonly ModConfig<bool> _breakableBarriers;
 
     private OpenTheDoor() : base("OpenTheDoor", "1.0")
     {
@@ -606,6 +616,7 @@ public sealed class OpenTheDoor : ModBase
         _threadMechanismDoors = AddBoolConfig("Thread mechanism Doors", true, key: "EnableThreadMechanismDoors");
         _maskDoors = AddBoolConfig("Mask item Doors", true, key: "EnableMaskDoors");
         _otherSpecialDoors = AddBoolConfig("Other special Doors", true, key: "EnableOtherSpecialDoors");
+        _breakableBarriers = AddBoolConfig("One-way breakable Barriers", true, key: "EnableBreakableBarriers");
     }
 
     [PluginEntryPoint]
@@ -620,6 +631,7 @@ public sealed class OpenTheDoor : ModBase
         lock (AttemptLock)
         {
             Attempts.Clear();
+            BarrierAttempts.Clear();
             BreakableDoorContexts.Clear();
             BreakableDoorOrder.Clear();
         }
@@ -700,6 +712,7 @@ public sealed class OpenTheDoor : ModBase
     [Callback(typeof(UpdateBehavior), CallbackType.Post)]
     public static void OnUpdate()
     {
+        UpdateBarriers();
         DoorAttempt[] snapshot;
         lock (AttemptLock)
         {
@@ -758,6 +771,125 @@ public sealed class OpenTheDoor : ModBase
             }
         }
     }
+
+    // Gm042 is a one-way destructible barrier, not a GimmickDoor. Its back
+    // sensor (1) uses NO_REACTION and only announces a refusal. Preserve that
+    // player reaction and break the barrier after native interaction has returned.
+    [MethodHook(typeof(app.Gm042), "onGmInteract_Success", MethodHookType.Pre)]
+    public static PreHookResult BeforeBarrierInteraction(Span<ulong> args)
+    {
+        if (!Instance._breakableBarriers.Value || args.Length < 2) return PreHookResult.Continue;
+        try
+        {
+            var barrier = ResolveBarrier(args[1]);
+            if (barrier is null || barrier._IsEventMode ||
+                (int)barrier._Interact_SuccessSensorID != 1 ||
+                (int)barrier._Interact_TouchSensorID != 1)
+                return PreHookResult.Continue;
+            if (IsBarrierBroken(barrier)) return PreHookResult.Skip;
+            var contextAddress = AddressOf(barrier.GimmickContext);
+            lock (AttemptLock)
+            {
+                if (BarrierAttempts.TryGetValue(args[1], out var pending) &&
+                    pending.ContextAddress == contextAddress)
+                    return PreHookResult.Skip;
+                if (barrier._State != app.Gm042.STATE.IDLE ||
+                    (BarrierAttempts.Count >= MaximumAttempts && !BarrierAttempts.ContainsKey(args[1])))
+                    return PreHookResult.Continue;
+                var message = BarrierMessage();
+                BarrierAttempts[args[1]] = new BarrierAttempt
+                {
+                    Address = args[1], ContextAddress = contextAddress,
+                    ReplacementMessage = message,
+                };
+                // Untranslated languages retain their actual native announcement.
+                // No global message hook or guessed English translation is used.
+                return message is null ? PreHookResult.Continue : PreHookResult.Skip;
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce("Failed to handle the one-way barrier interaction", exception);
+            return PreHookResult.Continue;
+        }
+    }
+
+    private static app.Gm042 ResolveBarrier(ulong address)
+    {
+        if (address == 0 || !ManagedObject.IsManagedObject(address)) return null;
+        var managed = ManagedObject.ToManagedObject(address);
+        if (managed is null || managed.IsGoingToBeDestroyed()) return null;
+        var barrier = managed.TryAs<app.Gm042>();
+        return AddressOf(barrier?.GimmickContext) != 0 ? barrier : null;
+    }
+
+    private static bool IsBarrierBroken(app.Gm042 barrier) =>
+        barrier._State is app.Gm042.STATE.BREAK or app.Gm042.STATE.END ||
+        barrier.GimmickContext.SaveFlagHolder?.State == app.Gm042.GM042_SAVE_STATE_BROKEN;
+
+    private static void UpdateBarriers()
+    {
+        BarrierAttempt[] snapshot;
+        lock (AttemptLock)
+        {
+            if (BarrierAttempts.Count == 0) return;
+            snapshot = new BarrierAttempt[BarrierAttempts.Count];
+            BarrierAttempts.Values.CopyTo(snapshot, 0);
+        }
+        foreach (var attempt in snapshot)
+        {
+            try
+            {
+                var barrier = ResolveBarrier(attempt.Address);
+                if (!Instance._breakableBarriers.Value || barrier is null || barrier._IsEventMode ||
+                    AddressOf(barrier.GimmickContext) != attempt.ContextAddress || IsBarrierBroken(barrier))
+                    continue;
+                // A mapped refusal was suppressed and left IDLE intact. Otherwise
+                // native code enters ANNOUNCE, then ANNOUNCE_WAIT. Any other state
+                // belongs to a new native action; never interrupt it to force a break.
+                var expectedState = attempt.ReplacementMessage is not null
+                    ? barrier._State == app.Gm042.STATE.IDLE
+                    : barrier._State is app.Gm042.STATE.ANNOUNCE or app.Gm042.STATE.ANNOUNCE_WAIT;
+                if (!expectedState) continue;
+                barrier.wakeup();
+                // This runs onBreak, including dynamics, collision, AI/path flags,
+                // save state 15 and mesh fade. Do not call onBreak alone or set END.
+                barrier.changeState(app.Gm042.STATE.BREAK);
+                if (barrier._State is not (app.Gm042.STATE.BREAK or app.Gm042.STATE.END))
+                    throw new InvalidOperationException("The barrier did not enter its native broken state.");
+                Instance.Log($"Barrier 0x{attempt.Address:X}: native destruction requested ({barrier._State}).");
+                if (attempt.ReplacementMessage is not null)
+                {
+                    if (API.GetManagedSingletonT<app.GUIManager>() is null)
+                        throw new InvalidOperationException("Barrier destroyed, but the announcement GUI is unavailable.");
+                    Announce(attempt.ReplacementMessage);
+                }
+            }
+            catch (Exception exception)
+            {
+                // Never show a success notice after destruction fails, or retry a
+                // partly executed native callback automatically on the next frame.
+                Instance.Log($"Failed to process barrier 0x{attempt.Address:X}: {exception}", ModLogLevel.Error);
+            }
+            finally
+            {
+                lock (AttemptLock)
+                {
+                    if (BarrierAttempts.TryGetValue(attempt.Address, out var current) && ReferenceEquals(current, attempt))
+                        BarrierAttempts.Remove(attempt.Address);
+                }
+            }
+        }
+    }
+
+    private static string BarrierMessage() => via.gui.GUISystem.MessageLanguage switch
+    {
+        // SignboardText_Com0004, ad627bd9-ffd7-4c31-9ebd-bf8d6c954141.
+        via.Language.SimplelifiedChinese => "可以从这一侧破坏",
+        via.Language.TransitionalChinese => "可以從此側破壞",
+        via.Language.English => "Can be destroyed from this side.",
+        _ => null,
+    };
 
     // These are native per-save door states, not a timed/address-only whitelist:
     // 1 = opened, 2 = closed after unlocking; 0/3 do not mean unlocked.
