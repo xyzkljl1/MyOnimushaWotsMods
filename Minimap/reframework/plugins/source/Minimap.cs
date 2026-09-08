@@ -1258,6 +1258,13 @@ public sealed class Minimap : ModBase
     private const int RectangleShape = 0;
     private const int CircleShape = 1;
 
+    private enum RollingMode
+    {
+        None,
+        Border,
+        Random,
+    }
+
     private static readonly string[] OrientationNames =
     {
         "North",
@@ -1269,6 +1276,13 @@ public sealed class Minimap : ModBase
     {
         "Rectangle",
         "Circle",
+    };
+
+    private static readonly string[] RollingNames =
+    {
+        "None",
+        "Border",
+        "Random",
     };
 
     private static readonly Minimap Instance = new();
@@ -1291,6 +1305,7 @@ public sealed class Minimap : ModBase
     private readonly ModConfig<ModHotkey> _toggleHotkey;
     private readonly ModConfig<int> _orientation;
     private readonly ModConfig<int> _shape;
+    private readonly ModConfig<int> _rolling;
     private readonly ModConfig<float> _width;
     private readonly ModConfig<float> _height;
     private readonly ModConfig<float> _pixelsPerMeter;
@@ -1307,6 +1322,7 @@ public sealed class Minimap : ModBase
     private readonly ModConfig<bool> _showPins;
     private readonly ModConfig<bool> _showEnemies;
     private readonly ModConfig<bool> _showFootprints;
+    private readonly RollingMotion _rollingMotion = new();
     private bool _isVisible = true;
 
     private static MapDefinition _map;
@@ -1359,12 +1375,13 @@ public sealed class Minimap : ModBase
         _orientation = AddRadioGroupConfig(
             "Orientation",
             MapFixed,
-            OrientationNames,
-            animatedTitle: true);
+            OrientationNames);
         _shape = AddRadioGroupConfig(
             "Shape",
             RectangleShape,
             ShapeNames);
+        _rolling = AddRadioGroupConfig(
+            "Rolling", (int)RollingMode.None, RollingNames, animatedTitle: true);
         _width = AddFloatConfig("Width", 420.0f, 20.0f, 800.0f, "%.0f");
         _height = AddFloatConfig("Height", 280.0f, 20.0f, 540.0f, "%.0f");
         _pixelsPerMeter = AddFloatConfig(
@@ -1411,6 +1428,7 @@ public sealed class Minimap : ModBase
         ResetMap();
         DestroyNativeGui();
         ShowShrine = false;
+        Instance._rollingMotion.Reset();
         _nextRetryTick = 0;
         _nextMarkerRefreshTick = 0;
         _errorReported = 0;
@@ -1556,6 +1574,13 @@ public sealed class Minimap : ModBase
                 Instance._topOffset.Value,
                 0.0f,
                 screenHeight - displayHeight);
+            Instance._rollingMotion.Update(
+                (RollingMode)Instance._rolling.Value,
+                screenWidth - displayWidth,
+                screenHeight - displayHeight,
+                Environment.TickCount64,
+                ref left,
+                ref top);
             var position = playerTransform.Position;
             var mapScale = _map.IsFlipSideUp ? -WorldToMapPixels : WorldToMapPixels;
             var mapX = _map.RootX + position.x * mapScale;
@@ -4074,6 +4099,7 @@ public sealed class Minimap : ModBase
 
     private static void HideMap()
     {
+        Instance._rollingMotion.Pause();
         if (IsAlive(_mapGroup))
         {
             _mapGroup.Visible = false;
@@ -4334,6 +4360,170 @@ public sealed class Minimap : ModBase
         public float Size;
         public bool HasPosition;
         public bool HasSize;
+    }
+
+    // Animate only the viewport origin; map content and every overlay share it.
+    // Coordinates use the same logical canvas as the native GUI, including ultrawide.
+    private sealed class RollingMotion
+    {
+        private const float Speed = 240.0f;
+        private readonly Random _random;
+        private RollingMode _mode;
+        private bool _hasPosition;
+        private bool _hasTime;
+        private long _lastTick;
+        private float _x;
+        private float _y;
+        private float _maximumX;
+        private float _maximumY;
+        private float _targetX;
+        private float _targetY;
+        private double _borderDistance;
+
+        public RollingMotion(Random random = null) => _random = random ?? new Random();
+
+        public void Pause() => _hasTime = false;
+
+        public void Reset()
+        {
+            _mode = RollingMode.None;
+            _hasPosition = false;
+            Pause();
+        }
+
+        public void Update(
+            RollingMode mode,
+            float maximumX,
+            float maximumY,
+            long now,
+            ref float left,
+            ref float top)
+        {
+            if (mode != RollingMode.Border && mode != RollingMode.Random)
+            {
+                // None uses the caller's configured offsets without changing them.
+                Reset();
+                return;
+            }
+
+            var initialize = !_hasPosition;
+            if (initialize)
+            {
+                _x = left;
+                _y = top;
+                _hasPosition = true;
+            }
+
+            var boundsChanged = maximumX != _maximumX || maximumY != _maximumY;
+            _maximumX = maximumX;
+            _maximumY = maximumY;
+            _x = Math.Clamp(_x, 0.0f, maximumX);
+            _y = Math.Clamp(_y, 0.0f, maximumY);
+            if (initialize || mode != _mode || boundsChanged)
+            {
+                _mode = mode;
+                if (mode == RollingMode.Border)
+                {
+                    ProjectToBorder();
+                }
+                else
+                {
+                    ChooseTarget();
+                }
+            }
+
+            // Pause while hidden, and cap a stalled frame to avoid a large jump.
+            var elapsed = _hasTime
+                ? (float)Math.Clamp((now - _lastTick) / 1000.0, 0.0, 0.1)
+                : 0.0f;
+            _lastTick = now;
+            _hasTime = true;
+            var distance = Speed * elapsed;
+            if (mode == RollingMode.Border)
+            {
+                AdvanceBorder(distance);
+            }
+            else if (distance > 0.0f && (maximumX > 0.0f || maximumY > 0.0f))
+            {
+                var deltaX = _targetX - _x;
+                var deltaY = _targetY - _y;
+                var remaining = MathF.Sqrt(deltaX * deltaX + deltaY * deltaY);
+                if (remaining <= distance)
+                {
+                    _x = _targetX;
+                    _y = _targetY;
+                    ChooseTarget();
+                }
+                else
+                {
+                    _x += deltaX * (distance / remaining);
+                    _y += deltaY * (distance / remaining);
+                }
+            }
+
+            left = _x = Math.Clamp(_x, 0.0f, maximumX);
+            top = _y = Math.Clamp(_y, 0.0f, maximumY);
+        }
+
+        private void ChooseTarget()
+        {
+            _targetX = (float)_random.NextDouble() * _maximumX;
+            _targetY = (float)_random.NextDouble() * _maximumY;
+        }
+
+        private void ProjectToBorder()
+        {
+            // Parameterize the legal top-left positions clockwise from the top left.
+            var nearest = _y;
+            _borderDistance = _x;
+            if (_maximumX - _x < nearest)
+            {
+                nearest = _maximumX - _x;
+                _borderDistance = _maximumX + (double)_y;
+            }
+            if (_maximumY - _y < nearest)
+            {
+                nearest = _maximumY - _y;
+                _borderDistance = 2.0 * _maximumX + _maximumY - _x;
+            }
+            if (_x < nearest)
+            {
+                _borderDistance = 2.0 * (_maximumX + (double)_maximumY) - _y;
+            }
+        }
+
+        private void AdvanceBorder(float distance)
+        {
+            var perimeter = 2.0 * (_maximumX + (double)_maximumY);
+            if (perimeter <= 0.0)
+            {
+                _x = _y = 0.0f;
+                return;
+            }
+
+            _borderDistance = (_borderDistance + distance) % perimeter;
+            var offset = _borderDistance;
+            if (offset <= _maximumX)
+            {
+                _x = (float)offset;
+                _y = 0.0f;
+            }
+            else if ((offset -= _maximumX) <= _maximumY)
+            {
+                _x = _maximumX;
+                _y = (float)offset;
+            }
+            else if ((offset -= _maximumY) <= _maximumX)
+            {
+                _x = _maximumX - (float)offset;
+                _y = _maximumY;
+            }
+            else
+            {
+                _x = 0.0f;
+                _y = _maximumY - (float)(offset - _maximumX);
+            }
+        }
     }
 
     private readonly struct MarkerPosition
