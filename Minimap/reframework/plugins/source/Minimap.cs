@@ -1193,6 +1193,8 @@ public sealed class Minimap : ModBase
     private static via.gui.Texture[] _lockedGateMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _pinMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _enemyMarkers = Array.Empty<via.gui.Texture>();
+    private static EnemyMarkerState[] _enemyMarkerStates = Array.Empty<EnemyMarkerState>();
+    private static int _visibleEnemyMarkerCount;
     private static via.gui.Circle[] _missionRanges = Array.Empty<via.gui.Circle>();
     private static via.gui.Texture[] _entranceMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _ladderMarkers = Array.Empty<via.gui.Texture>();
@@ -1236,7 +1238,7 @@ public sealed class Minimap : ModBase
         _showChests = AddBoolConfig("Show chests", true);
         _showHiddenChests = AddBoolConfig("Show hidden chests", true);
         _showLockedGates = AddBoolConfig(
-            "Show locked doors / one-way passages", true, key: "Show locked doors");
+            "Show locked doors", true, key: "Show locked doors");
         _showEntrances = AddBoolConfig("Show area entrances/exits", true);
         _showLadders = AddBoolConfig("Show ladders", true);
         _showCollectibles = AddBoolConfig("Show collectibles", true);
@@ -2001,6 +2003,10 @@ public sealed class Minimap : ModBase
             texture.Color = color;
         }
 
+        // ConfigureMarkerTexture has hidden every slot. Start a fresh cache for
+        // this GUI tree, including when a previously loaded prefab is reused.
+        _enemyMarkerStates = new EnemyMarkerState[_enemyMarkers.Length];
+        _visibleEnemyMarkerCount = 0;
         foreach (var texture in _enemyMarkers)
         {
             texture.ColorPreset = _System.Guid.Empty;
@@ -2010,6 +2016,9 @@ public sealed class Minimap : ModBase
             color.b = 64;
             color.a = 255;
             texture.Color = color;
+            var rotation = texture.Rotation;
+            rotation.z = 0.0f;
+            texture.Rotation = rotation;
         }
 
         Instance.Log(
@@ -3242,7 +3251,7 @@ public sealed class Minimap : ModBase
         {
             EnemyPositions.Clear();
             _nextEnemyRefreshTick = 0;
-            SetVisible(_enemyMarkers, false);
+            HideUnusedEnemyMarkers(0);
             return;
         }
 
@@ -3266,19 +3275,66 @@ public sealed class Minimap : ModBase
                         out var x, out var y)) continue;
 
                 // These slots use the native dot texture, without an icon atlas.
-                SetMarkerTexture(_enemyMarkers[used++], x, y, size, size, 0.0f);
+                SetEnemyMarker(used++, x, y, size);
             }
-            HideUnused(_enemyMarkers, used);
+            HideUnusedEnemyMarkers(used);
         }
         catch (Exception exception)
         {
             EnemyPositions.Clear();
-            SetVisible(_enemyMarkers, false);
+            HideUnusedEnemyMarkers(0);
+            Array.Clear(_enemyMarkerStates);
             _nextEnemyRefreshTick = Environment.TickCount64 + RetryDelayMilliseconds;
             if (Interlocked.Exchange(ref _enemyErrorReported, 1) == 0)
             {
                 Instance.Log($"Enemy marker update will retry: {exception}", ModLogLevel.Error);
             }
+        }
+    }
+
+    private static void SetEnemyMarker(int index, float x, float y, float size)
+    {
+        var texture = _enemyMarkers[index];
+        ref var state = ref _enemyMarkerStates[index];
+        // Compare managed values instead of reading native GUI properties on
+        // unchanged frames. Only cache an attribute after its setter succeeds.
+        if (!state.HasPosition || state.X != x || state.Y != y)
+        {
+            var position = texture.Position;
+            position.x = x;
+            position.y = y;
+            position.z = 0.0f;
+            texture.Position = position;
+            state.X = x;
+            state.Y = y;
+            state.HasPosition = true;
+        }
+        if (!state.HasSize || state.Size != size)
+        {
+            var dimensions = texture.Size;
+            dimensions.w = size;
+            dimensions.h = size;
+            texture.Size = dimensions;
+            state.Size = size;
+            state.HasSize = true;
+        }
+        if (index >= _visibleEnemyMarkerCount)
+        {
+            // Slots are filled in order. Include this slot in error cleanup even
+            // if a native setter changes visibility and then throws.
+            _visibleEnemyMarkerCount = index + 1;
+            texture.Visible = true;
+        }
+    }
+
+    private static void HideUnusedEnemyMarkers(int firstUnused)
+    {
+        // The visible slots form a prefix. Hide only the newly unused suffix;
+        // subsequent disabled/empty frames perform no native GUI access.
+        while (_visibleEnemyMarkerCount > firstUnused)
+        {
+            _enemyMarkers[_visibleEnemyMarkerCount - 1].Visible = false;
+            --_visibleEnemyMarkerCount;
         }
     }
 
@@ -3592,7 +3648,7 @@ public sealed class Minimap : ModBase
 
     private static void HideNativeMarkers()
     {
-        SetVisible(_enemyMarkers, false);
+        HideUnusedEnemyMarkers(0);
         SetVisible(_pinMarkers, false);
         SetVisible(_lockedGateMarkers, false);
         foreach (var circle in _missionRanges)
@@ -3853,6 +3909,9 @@ public sealed class Minimap : ModBase
         _nextMarkerRefreshTick = 0;
         EnemyPositions.Clear();
         _nextEnemyRefreshTick = 0;
+        // This GUI can survive a map change. Preserve its visibility count so
+        // the next render also hides slots left over from the previous map.
+        Array.Clear(_enemyMarkerStates);
         _map = null;
     }
 
@@ -3900,6 +3959,8 @@ public sealed class Minimap : ModBase
         _lockedGateMarkers = Array.Empty<via.gui.Texture>();
         _pinMarkers = Array.Empty<via.gui.Texture>();
         _enemyMarkers = Array.Empty<via.gui.Texture>();
+        _enemyMarkerStates = Array.Empty<EnemyMarkerState>();
+        _visibleEnemyMarkerCount = 0;
         _missionRanges = Array.Empty<via.gui.Circle>();
         _entranceMarkers = Array.Empty<via.gui.Texture>();
         _ladderMarkers = Array.Empty<via.gui.Texture>();
@@ -4072,6 +4133,15 @@ public sealed class Minimap : ModBase
         public float Z { get; }
         public float Radius { get; }
         public app.MissionDef.MISSION_TYPE MissionType { get; }
+    }
+
+    private struct EnemyMarkerState
+    {
+        public float X;
+        public float Y;
+        public float Size;
+        public bool HasPosition;
+        public bool HasSize;
     }
 
     private readonly struct MarkerPosition
