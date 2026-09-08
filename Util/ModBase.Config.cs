@@ -382,12 +382,29 @@ public abstract partial class ModBase
             value = minimum;
         }
 
+        value = System.Math.Clamp(System.MathF.Round(value), minimum, maximum);
+
+        // Keep direct entry and a slider visible together within one item width.
+        // Zero input steps remove the +/- buttons without losing keyboard input.
+        var width = Hexa.NET.ImGui.ImGui.CalcItemWidth();
+        var spacing = Hexa.NET.ImGui.ImGui.GetStyle().ItemInnerSpacing.X;
+        var inputWidth = System.MathF.Min(
+            Hexa.NET.ImGui.ImGui.GetFontSize() * 6.0f, width * 0.4f);
+        Hexa.NET.ImGui.ImGui.SetNextItemWidth(inputWidth);
         var changed = Hexa.NET.ImGui.ImGui.InputFloat(
-            label,
-            ref value,
-            1.0f,
-            100.0f,
-            "%.0f");
+            $"##{label}.Input", ref value, 0.0f, 0.0f, "%.0f");
+        if (!float.IsFinite(value))
+        {
+            value = minimum;
+        }
+        value = System.Math.Clamp(System.MathF.Round(value), minimum, maximum);
+
+        Hexa.NET.ImGui.ImGui.SameLine(0.0f, spacing);
+        Hexa.NET.ImGui.ImGui.SetNextItemWidth(
+            System.MathF.Max(1.0f, width - inputWidth - spacing));
+        changed |= Hexa.NET.ImGui.ImGui.SliderFloat(
+            label, ref value, minimum, maximum, "",
+            Hexa.NET.ImGui.ImGuiSliderFlags.AlwaysClamp);
         value = System.Math.Clamp(System.MathF.Round(value), minimum, maximum);
         return changed || value != original;
     }
