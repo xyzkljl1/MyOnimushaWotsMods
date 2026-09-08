@@ -8,7 +8,7 @@ using REFrameworkNET.Callbacks;
 
 // BEGIN copied source: Util/ModBase.cs
 // Source blob SHA-1: 25417359db8c70a84c6f557d62440b857d2d6419
-// Source commit: 537a2d80892067d2e33016d8c6f521f922b1013c
+// Source commit: 8f7f6bda556daaea523bd912d05ca7aa0a981e35
 // I do this to avoid panicing users. Copying code everythere instead of publishing a DLL is indeed stupid, but users’ antivirus software is stupider.
 // Module: Mod identity, logging, one-time error reporting, and managed-object helpers.
 public enum ModLogLevel
@@ -94,8 +94,8 @@ public abstract partial class ModBase
 // END copied source: Util/ModBase.cs
 
 // BEGIN copied source: Util/ModBase.Config.cs
-// Source blob SHA-1: 8aa5d2fa84e234fecb2249961835e33ad1f1c1de
-// Source commit: 537a2d80892067d2e33016d8c6f521f922b1013c
+// Source blob SHA-1: b9e1eeac657d5126c423e2901053883aee3b59d1
+// Source commit: 8f7f6bda556daaea523bd912d05ca7aa0a981e35
 // Module: ModBase configuration, persistence, and ImGui helpers.
 // Requires: Util/ModBase.cs from the same committed Git revision.
 public delegate bool ModConfigRenderer<T>(string label, ref T value);
@@ -240,19 +240,21 @@ public abstract partial class ModBase
     protected ModConfig<bool> AddBoolConfig(
         string name,
         bool defaultValue,
-        string key = null) =>
+        string key = null,
+        bool animatedTitle = false) =>
         AddConfig(
             name,
             defaultValue,
-            static (string label, ref bool value) =>
-                Hexa.NET.ImGui.ImGui.Checkbox(label, ref value),
+            (string label, ref bool value) =>
+                DrawCheckbox(label, ref value, animatedTitle),
             key);
 
     protected ModConfig<ModColor> AddColorConfig(
         string name,
         ModColor defaultValue,
         float maximumComponent = 4.0f,
-        string key = null)
+        string key = null,
+        bool animatedTitle = false)
     {
         if (!float.IsFinite(maximumComponent) || maximumComponent <= 0.0f)
         {
@@ -263,7 +265,7 @@ public abstract partial class ModBase
             name,
             defaultValue,
             (string label, ref ModColor value) =>
-                DrawColorPicker(label, ref value, maximumComponent),
+                DrawColorPicker(label, ref value, maximumComponent, animatedTitle),
             key);
     }
 
@@ -272,7 +274,8 @@ public abstract partial class ModBase
         int defaultValue,
         string[] options,
         bool sameLine = true,
-        string key = null)
+        string key = null,
+        bool animatedTitle = false)
     {
         System.ArgumentNullException.ThrowIfNull(options);
         if (options.Length == 0)
@@ -297,7 +300,7 @@ public abstract partial class ModBase
             name,
             defaultValue,
             (string label, ref int value) =>
-                DrawRadioGroup(label, ref value, labels, sameLine),
+                DrawRadioGroup(label, ref value, labels, sameLine, animatedTitle),
             key);
     }
 
@@ -307,17 +310,13 @@ public abstract partial class ModBase
         int minimum,
         int maximum,
         string format = "%d",
-        string key = null) =>
+        string key = null,
+        bool animatedTitle = false) =>
         AddConfig(
             name,
             defaultValue,
             (string label, ref int value) =>
-                Hexa.NET.ImGui.ImGui.SliderInt(
-                    label,
-                    ref value,
-                    minimum,
-                    maximum,
-                    format),
+                DrawIntSlider(label, ref value, minimum, maximum, format, animatedTitle),
             key);
 
     protected ModConfig<float> AddFloatConfig(
@@ -326,17 +325,13 @@ public abstract partial class ModBase
         float minimum,
         float maximum,
         string format = "%.2f",
-        string key = null) =>
+        string key = null,
+        bool animatedTitle = false) =>
         AddConfig(
             name,
             defaultValue,
             (string label, ref float value) =>
-                Hexa.NET.ImGui.ImGui.SliderFloat(
-                    label,
-                    ref value,
-                    minimum,
-                    maximum,
-                    format),
+                DrawFloatSlider(label, ref value, minimum, maximum, format, animatedTitle),
             key);
 
     protected ModConfig<float> AddPixelInputConfig(
@@ -344,7 +339,8 @@ public abstract partial class ModBase
         float defaultValue,
         float minimum,
         float maximum,
-        string key = null)
+        string key = null,
+        bool animatedTitle = false)
     {
         if (!float.IsFinite(defaultValue) || !float.IsFinite(minimum) ||
             !float.IsFinite(maximum) || minimum > maximum ||
@@ -357,7 +353,7 @@ public abstract partial class ModBase
             name,
             System.MathF.Round(defaultValue),
             (string label, ref float value) =>
-                DrawPixelInput(label, ref value, minimum, maximum),
+                DrawPixelInput(label, ref value, minimum, maximum, animatedTitle),
             key);
     }
 
@@ -392,10 +388,122 @@ public abstract partial class ModBase
     protected bool DrawButton(string label, string id) =>
         Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
 
+    // A shared two-second orange/blue cycle, evaluated only while drawing a title.
+    // Presentation never changes the stored configuration value or its dirty state.
+    private static System.Numerics.Vector4 GetAnimatedTitleColor()
+    {
+        var phase = (float)(Hexa.NET.ImGui.ImGui.GetTime() % 2.0) * System.MathF.PI;
+        var blend = 0.5f - 0.5f * System.MathF.Cos(phase);
+        return System.Numerics.Vector4.Lerp(
+            new System.Numerics.Vector4(1.0f, 0.65f, 0.2f, 1.0f),
+            new System.Numerics.Vector4(0.3f, 0.7f, 1.0f, 1.0f),
+            blend);
+    }
+
+    protected static void DrawConfigTitle(string text, bool animatedTitle = false)
+    {
+        if (!animatedTitle)
+        {
+            Hexa.NET.ImGui.ImGui.TextUnformatted(text);
+            return;
+        }
+
+        Hexa.NET.ImGui.ImGui.PushStyleColor(
+            Hexa.NET.ImGui.ImGuiCol.Text, GetAnimatedTitleColor());
+        try
+        {
+            Hexa.NET.ImGui.ImGui.TextUnformatted(text);
+        }
+        finally
+        {
+            Hexa.NET.ImGui.ImGui.PopStyleColor();
+        }
+    }
+
+    private static bool DrawCheckbox(string label, ref bool value, bool animatedTitle)
+    {
+        if (!animatedTitle)
+        {
+            return Hexa.NET.ImGui.ImGui.Checkbox(label, ref value);
+        }
+
+        // Checkbox text has its own style color; the check mark is unaffected.
+        Hexa.NET.ImGui.ImGui.PushStyleColor(
+            Hexa.NET.ImGui.ImGuiCol.Text, GetAnimatedTitleColor());
+        try
+        {
+            return Hexa.NET.ImGui.ImGui.Checkbox(label, ref value);
+        }
+        finally
+        {
+            Hexa.NET.ImGui.ImGui.PopStyleColor();
+        }
+    }
+
+    private static void DrawSliderTitle(string label)
+    {
+        var separator = label.IndexOf("##", System.StringComparison.Ordinal);
+        var title = separator < 0 ? label : label[..separator];
+        Hexa.NET.ImGui.ImGui.SameLine(
+            0.0f, Hexa.NET.ImGui.ImGui.GetStyle().ItemInnerSpacing.X);
+        Hexa.NET.ImGui.ImGui.AlignTextToFramePadding();
+        DrawConfigTitle(title, animatedTitle: true);
+    }
+
+    private static bool DrawIntSlider(
+        string label, ref int value, int minimum, int maximum,
+        string format, bool animatedTitle)
+    {
+        if (!animatedTitle)
+        {
+            return Hexa.NET.ImGui.ImGui.SliderInt(label, ref value, minimum, maximum, format);
+        }
+
+        // Hide the built-in label so the slider's numeric value keeps its normal color.
+        // The widget ID is independent of the animated color.
+        Hexa.NET.ImGui.ImGui.BeginGroup();
+        try
+        {
+            var changed = Hexa.NET.ImGui.ImGui.SliderInt(
+                $"##{label}", ref value, minimum, maximum, format);
+            DrawSliderTitle(label);
+            return changed;
+        }
+        finally
+        {
+            Hexa.NET.ImGui.ImGui.EndGroup();
+        }
+    }
+
+    private static bool DrawFloatSlider(
+        string label, ref float value, float minimum, float maximum,
+        string format, bool animatedTitle,
+        Hexa.NET.ImGui.ImGuiSliderFlags flags = Hexa.NET.ImGui.ImGuiSliderFlags.None)
+    {
+        if (!animatedTitle)
+        {
+            return Hexa.NET.ImGui.ImGui.SliderFloat(label, ref value, minimum, maximum, format, flags);
+        }
+
+        Hexa.NET.ImGui.ImGui.BeginGroup();
+        try
+        {
+            var changed = Hexa.NET.ImGui.ImGui.SliderFloat(
+                $"##{label}", ref value, minimum, maximum, format, flags);
+            DrawSliderTitle(label);
+            return changed;
+        }
+        finally
+        {
+            Hexa.NET.ImGui.ImGui.EndGroup();
+        }
+    }
+
     private static bool DrawColorPicker(
         string label,
         ref ModColor value,
-        float maximumComponent)
+        float maximumComponent,
+        bool animatedTitle)
     {
         var preview = new System.Numerics.Vector3(
             NormalizeColorComponent(value.Red, maximumComponent),
@@ -411,7 +519,7 @@ public abstract partial class ModBase
                     Hexa.NET.ImGui.ImGuiColorEditFlags.NoLabel;
         var idSeparator = label.IndexOf("##", System.StringComparison.Ordinal);
         var visibleLabel = idSeparator < 0 ? label : label[..idSeparator];
-        Hexa.NET.ImGui.ImGui.TextUnformatted(visibleLabel);
+        DrawConfigTitle(visibleLabel, animatedTitle);
         changed |= Hexa.NET.ImGui.ImGui.ColorPicker3(label, ref preview, flags);
 
         var red = NormalizeColorComponent(preview.X, maximumComponent);
@@ -433,12 +541,13 @@ public abstract partial class ModBase
         string label,
         ref int value,
         string[] options,
-        bool sameLine)
+        bool sameLine,
+        bool animatedTitle)
     {
         var separator = label.IndexOf("##", System.StringComparison.Ordinal);
         var name = separator >= 0 ? label[..separator] : label;
         var id = separator >= 0 ? label[(separator + 2)..] : label;
-        Hexa.NET.ImGui.ImGui.TextUnformatted($"{name}:");
+        DrawConfigTitle($"{name}:", animatedTitle);
         Hexa.NET.ImGui.ImGui.SameLine();
 
         var changed = false;
@@ -472,7 +581,8 @@ public abstract partial class ModBase
         string label,
         ref float value,
         float minimum,
-        float maximum)
+        float maximum,
+        bool animatedTitle)
     {
         var original = value;
         if (!float.IsFinite(value))
@@ -500,8 +610,8 @@ public abstract partial class ModBase
         Hexa.NET.ImGui.ImGui.SameLine(0.0f, spacing);
         Hexa.NET.ImGui.ImGui.SetNextItemWidth(
             System.MathF.Max(1.0f, width - inputWidth - spacing));
-        changed |= Hexa.NET.ImGui.ImGui.SliderFloat(
-            label, ref value, minimum, maximum, "",
+        changed |= DrawFloatSlider(
+            label, ref value, minimum, maximum, "", animatedTitle,
             Hexa.NET.ImGui.ImGuiSliderFlags.AlwaysClamp);
         value = System.Math.Clamp(System.MathF.Round(value), minimum, maximum);
         return changed || value != original;
@@ -647,8 +757,8 @@ public abstract partial class ModBase
 // END copied source: Util/ModBase.Config.cs
 
 // BEGIN copied source: Util/ModBase.Hotkey.cs
-// Source blob SHA-1: 9aba964758d536ae9257a9953438bf77a5b3af9a
-// Source commit: 537a2d80892067d2e33016d8c6f521f922b1013c
+// Source blob SHA-1: 588da4c68b1241b395e60e807de8265bbc27bdb1
+// Source commit: 8f7f6bda556daaea523bd912d05ca7aa0a981e35
 // Module: Persistent keyboard/gamepad shortcuts and their ImGui editor.
 // Requires: Util/ModBase.cs and Util/ModBase.Config.cs from the same commit.
 // Add a binding with AddHotkeyConfig(), then call IsHotkeyPressed() once per frame.
@@ -890,16 +1000,19 @@ public abstract partial class ModBase
         bool ctrl = false,
         bool shift = false,
         bool alt = false,
-        string key = null) =>
+        string key = null,
+        bool animatedTitle = false) =>
         AddHotkeyConfig(
             name,
             new ModHotkey(defaultKey, ctrl, shift, alt),
-            key);
+            key,
+            animatedTitle);
 
     protected ModConfig<ModHotkey> AddHotkeyConfig(
         string name,
         ModHotkey defaultValue,
-        string key = null)
+        string key = null,
+        bool animatedTitle = false)
     {
         if (!defaultValue.IsValid)
         {
@@ -908,7 +1021,11 @@ public abstract partial class ModBase
                 "The default hotkey must be a keyboard or gamepad key.");
         }
 
-        return AddConfig(name, defaultValue, DrawHotkeyConfig, key);
+        return AddConfig(
+            name, defaultValue,
+            (string label, ref ModHotkey value) =>
+                DrawHotkeyConfig(label, ref value, animatedTitle),
+            key);
     }
 
     protected bool IsHotkeyPressed(
@@ -922,7 +1039,7 @@ public abstract partial class ModBase
         return isDown && !wasDown;
     }
 
-    private bool DrawHotkeyConfig(string label, ref ModHotkey value)
+    private bool DrawHotkeyConfig(string label, ref ModHotkey value, bool animatedTitle)
     {
         var isCapturing = string.Equals(
             _capturingHotkeyId,
@@ -940,9 +1057,17 @@ public abstract partial class ModBase
         var separator = label.IndexOf("##", System.StringComparison.Ordinal);
         var name = separator >= 0 ? label[..separator] : label;
         var id = separator >= 0 ? label[separator..] : $"##{label}";
+        if (animatedTitle)
+        {
+            Hexa.NET.ImGui.ImGui.AlignTextToFramePadding();
+            DrawConfigTitle($"{name}:", animatedTitle: true);
+            Hexa.NET.ImGui.ImGui.SameLine();
+        }
+
+        var prefix = animatedTitle ? "" : $"{name}: ";
         var buttonText = isCapturing
-            ? $"{name}: press a key...{id}.Capture"
-            : $"{name}: {value}{id}.Capture";
+            ? $"{prefix}press a key...{id}.Capture"
+            : $"{prefix}{value}{id}.Capture";
         if (Hexa.NET.ImGui.ImGui.Button(buttonText))
         {
             _capturingHotkeyId = isCapturing ? null : label;
@@ -1029,6 +1154,7 @@ public sealed class Minimap : ModBase
     private const string LockedGateMarkerPrefix = "Minimap_LockedGateMarker_";
     private const string PinMarkerPrefix = "Minimap_PinMarker_";
     private const string EnemyMarkerPrefix = "Minimap_EnemyMarker_";
+    private const string ShrineMarkerPrefix = "Minimap_ShrineMarker_";
     private const string MissionRangePrefix = "Minimap_MissionRange_";
     private const string EntranceMarkerPrefix = "Minimap_EntranceMarker_";
     private const string LadderMarkerPrefix = "Minimap_LadderMarker_";
@@ -1051,6 +1177,9 @@ public sealed class Minimap : ModBase
     private const int LockedGateMarkerCount = 24;
     private const int PinMarkerCount = 41; // Up to 40 objectives and one manual pin.
     private const int EnemyMarkerCount = 64;
+    private const int ShrineMarkerCount = 32;
+    // not gonna publish this function because I'm unhappy. A user said it's useless without showing shrines. So I'll just keep it useless.
+    private static bool ShowShrine { get; set; }
     private const int MaxEnemyContextsToInspect = 1024;
     private const int MissionRangeCount = 16;
     private const int EntranceMarkerCount = 16;
@@ -1092,6 +1221,11 @@ public sealed class Minimap : ModBase
     private const uint EntranceIconPattern = 7;
     private const uint LadderIconPattern = 9;
 
+    // cGUIMapIcon selects lib000122 DEFAULT frame 9 when a shrine is
+    // released and frame 17 otherwise. Both use sequence 0 of uvs000120.
+    private const uint ReleasedShrineIconPattern = 1;
+    private const uint UnreleasedShrineIconPattern = 21;
+
     // lib000122's native map-object animation: SUB_MISTERY frame 4 and
     // MEDICINE_BAG_MATERIAL frame 24 use these uvs000120 patterns.
     private const uint SubMysteryIconPattern = 2;
@@ -1108,12 +1242,14 @@ public sealed class Minimap : ModBase
     // separate from UV patterns: the same atlas can contain both categories.
     private const string MapSymbolColorPresetId = "1e50f708-849d-48fe-95bd-0919f7287e35";
     private const string MissionColorPresetId = "a2f047c3-da95-4bd3-ad51-10bcba41297f";
+    private const string UnreleasedShrineColorPresetId = "aa4e9436-5ebc-4ddd-b911-38a05cb46b71";
 
     private enum MarkerColor
     {
         Original,
         MapSymbol,
         Mission,
+        UnreleasedShrine,
     }
 
     private const int MapFixed = 0;
@@ -1143,6 +1279,7 @@ public sealed class Minimap : ModBase
     private static readonly List<MarkerPosition> LockedGatePositions = new();
     private static readonly List<MarkerPosition> PinPositions = new();
     private static readonly List<MarkerPosition> EnemyPositions = new();
+    private static readonly List<MarkerPosition> ShrinePositions = new();
     private static readonly List<MissionRange> MissionRanges = new();
     private static readonly List<MarkerPosition> EntrancePositions = new();
     private static readonly List<MarkerPosition> LadderPositions = new();
@@ -1193,6 +1330,7 @@ public sealed class Minimap : ModBase
     private static via.gui.Texture[] _lockedGateMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _pinMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _enemyMarkers = Array.Empty<via.gui.Texture>();
+    private static via.gui.Texture[] _shrineMarkers = Array.Empty<via.gui.Texture>();
     private static EnemyMarkerState[] _enemyMarkerStates = Array.Empty<EnemyMarkerState>();
     private static int _visibleEnemyMarkerCount;
     private static via.gui.Circle[] _missionRanges = Array.Empty<via.gui.Circle>();
@@ -1221,7 +1359,8 @@ public sealed class Minimap : ModBase
         _orientation = AddRadioGroupConfig(
             "Orientation",
             MapFixed,
-            OrientationNames);
+            OrientationNames,
+            animatedTitle: true);
         _shape = AddRadioGroupConfig(
             "Shape",
             RectangleShape,
@@ -1251,8 +1390,19 @@ public sealed class Minimap : ModBase
     [PluginEntryPoint]
     public static void Main()
     {
+        // Read the local opt-in once per script load, never during frame updates.
+        ShowShrine = HasLocalDebugFile();
         Instance.InitializeMod();
         Instance.Log("Using the game's native map textures.");
+        if (ShowShrine) Instance.Log("Local debug.json detected; shrine markers enabled.");
+    }
+
+    private static bool HasLocalDebugFile()
+    {
+        // Reuse the data directory already resolved by ModBase for this mod.
+        var dataDirectory = System.IO.Path.GetDirectoryName(Instance.ConfigPath);
+        return !string.IsNullOrEmpty(dataDirectory) && System.IO.File.Exists(
+            System.IO.Path.Combine(dataDirectory, "debug.json"));
     }
 
     [PluginExitPoint]
@@ -1260,6 +1410,7 @@ public sealed class Minimap : ModBase
     {
         ResetMap();
         DestroyNativeGui();
+        ShowShrine = false;
         _nextRetryTick = 0;
         _nextMarkerRefreshTick = 0;
         _errorReported = 0;
@@ -1848,6 +1999,9 @@ public sealed class Minimap : ModBase
             view, LockedGateMarkerPrefix, LockedGateMarkerCount);
         var pinMarkers = FindOptionalTextures(view, PinMarkerPrefix, PinMarkerCount);
         var enemyMarkers = FindOptionalTextures(view, EnemyMarkerPrefix, EnemyMarkerCount);
+        var shrineMarkers = ShowShrine
+            ? FindOptionalTextures(view, ShrineMarkerPrefix, ShrineMarkerCount)
+            : Array.Empty<via.gui.Texture>();
         var missionRanges = new via.gui.Circle[MissionRangeCount];
         for (var index = 0; index < missionRanges.Length; ++index)
         {
@@ -1893,6 +2047,7 @@ public sealed class Minimap : ModBase
         _lockedGateMarkers = lockedGateMarkers;
         _pinMarkers = pinMarkers;
         _enemyMarkers = enemyMarkers;
+        _shrineMarkers = shrineMarkers;
         _missionRanges = missionRanges;
         _entranceMarkers = entranceMarkers;
         _ladderMarkers = ladderMarkers;
@@ -1954,6 +2109,7 @@ public sealed class Minimap : ModBase
             _System.Guid.Empty,
             _System.Guid.Parse(MapSymbolColorPresetId),
             _System.Guid.Parse(MissionColorPresetId),
+            _System.Guid.Parse(UnreleasedShrineColorPresetId),
         };
         MarkerColors.Clear();
         ConfigureMarkerTexture(_playerMarker);
@@ -1966,6 +2122,7 @@ public sealed class Minimap : ModBase
                      _lockedGateMarkers,
                      _pinMarkers,
                      _enemyMarkers,
+                     _shrineMarkers,
                      _entranceMarkers,
                      _ladderMarkers,
                      _collectibleMarkers,
@@ -2029,12 +2186,18 @@ public sealed class Minimap : ModBase
             $"lockedDoors={_lockedGateMarkers.Length}/{LockedGateMarkerCount}, " +
             $"pins={_pinMarkers.Length}/{PinMarkerCount}, " +
             $"enemies={_enemyMarkers.Length}/{EnemyMarkerCount}, " +
+            $"shrines={(ShowShrine ? $"{_shrineMarkers.Length}/{ShrineMarkerCount}" : "disabled")}, " +
             $"missionRanges={_missionRanges.Length}/{MissionRangeCount}, " +
             $"entrances={_entranceMarkers.Length}/{EntranceMarkerCount}, " +
             $"ladders={_ladderMarkers.Length}/{LadderMarkerCount}, " +
             $"collectibles={_collectibleMarkers.Length}/{CollectibleMarkerCount}, " +
             $"missions={_missionMarkers.Length}/{MissionMarkerCount}, " +
             $"footprints={_footprintMarkers.Length}/{FootprintMarkerCount}.");
+
+        if (ShowShrine && _shrineMarkers.Length == 0)
+        {
+            Instance.Log("Shrine icon nodes are unavailable. Install the updated native GUI asset and fully restart the game once to clear the cached prefab.");
+        }
 
         foreach (var slot in slots)
         {
@@ -2636,6 +2799,18 @@ public sealed class Minimap : ModBase
                 SetVisible(_pinMarkers, false);
             }
 
+            if (ShowShrine)
+            {
+                UpdateMapObjectMarkers(
+                    ShrinePositions, _shrineMarkers, 48.0f,
+                    playerX, playerZ, left, top, width, height,
+                    pixelsPerMeter, mapSign, cosine, sine, markerScale, isCircle);
+            }
+            else
+            {
+                SetVisible(_shrineMarkers, false);
+            }
+
             UpdateMissionRanges(
                 playerX, playerZ, left, top, width, height,
                 pixelsPerMeter, mapSign, cosine, sine);
@@ -2703,6 +2878,7 @@ public sealed class Minimap : ModBase
         var entrances = new List<MarkerPosition>();
         var ladders = new List<MarkerPosition>();
         var collectibles = new List<MarkerPosition>();
+        var shrines = new List<MarkerPosition>();
         for (var packageIndex = 0;
              packageIndex < packages.Count;
              ++packageIndex)
@@ -2736,6 +2912,18 @@ public sealed class Minimap : ModBase
 
                 switch (data.MapObjectType)
                 {
+                    case app.EnvDef.MAP_OBJECT_TYPE_Fixed.WARP_MIRROR:
+                        if (ShowShrine)
+                        {
+                            // Match the large map's release flag, rather than
+                            // treating discovery or a loaded shrine body as unlock.
+                            var released = package.isReleaseObject(data.MainID, data.SubID);
+                            shrines.Add(new MarkerPosition(
+                                position.x, position.z,
+                                released ? ReleasedShrineIconPattern : UnreleasedShrineIconPattern,
+                                color: released ? MarkerColor.MapSymbol : MarkerColor.UnreleasedShrine));
+                        }
+                        break;
                     case app.EnvDef.MAP_OBJECT_TYPE_Fixed.ARM_BREAK_WALL:
                         walls.Add(new MarkerPosition(
                             position.x,
@@ -2807,6 +2995,7 @@ public sealed class Minimap : ModBase
         EntrancePositions.AddRange(entrances);
         LadderPositions.AddRange(ladders);
         CollectiblePositions.AddRange(collectibles);
+        ShrinePositions.AddRange(shrines);
     }
 
     private static void ClearMapObjectPositions()
@@ -2820,6 +3009,7 @@ public sealed class Minimap : ModBase
         EntrancePositions.Clear();
         LadderPositions.Clear();
         CollectiblePositions.Clear();
+        ShrinePositions.Clear();
         MissionPositions.Clear();
     }
 
@@ -3651,6 +3841,7 @@ public sealed class Minimap : ModBase
         HideUnusedEnemyMarkers(0);
         SetVisible(_pinMarkers, false);
         SetVisible(_lockedGateMarkers, false);
+        SetVisible(_shrineMarkers, false);
         foreach (var circle in _missionRanges)
         {
             if (IsAlive(circle)) circle.Visible = false;
@@ -3959,6 +4150,7 @@ public sealed class Minimap : ModBase
         _lockedGateMarkers = Array.Empty<via.gui.Texture>();
         _pinMarkers = Array.Empty<via.gui.Texture>();
         _enemyMarkers = Array.Empty<via.gui.Texture>();
+        _shrineMarkers = Array.Empty<via.gui.Texture>();
         _enemyMarkerStates = Array.Empty<EnemyMarkerState>();
         _visibleEnemyMarkerCount = 0;
         _missionRanges = Array.Empty<via.gui.Circle>();

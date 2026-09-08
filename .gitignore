@@ -2,3 +2,5 @@
 /Updater/bin/
 /Updater/obj/
 /Updater/updater.json
+**/reframework/data/debug.json
+**/reframework/data/debug.json.tmp

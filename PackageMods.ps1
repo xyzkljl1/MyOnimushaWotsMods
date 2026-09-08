@@ -86,6 +86,8 @@ foreach ($mod in $mods) {
     $configExclusions = @(
         "-x!reframework\data\$modName.json"
         "-x!reframework\data\$modName.json.tmp"
+        '-x!reframework\data\debug.json'
+        '-x!reframework\data\debug.json.tmp'
     )
 
     if (-not (Test-Path -LiteralPath $reframeworkPath -PathType Container)) {
