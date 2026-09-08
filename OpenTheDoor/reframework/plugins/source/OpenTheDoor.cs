@@ -593,7 +593,6 @@ public sealed class OpenTheDoor : ModBase
     [ThreadStatic] private static int _readingOriginalChecks;
     [ThreadStatic] private static System.Collections.Generic.Stack<ulong?> _doorResults;
     [ThreadStatic] private static System.Collections.Generic.Stack<ulong> _startingDoors;
-    private readonly ModConfig<bool> _enabled;
     private readonly ModConfig<bool> _ordinaryDoors;
     private readonly ModConfig<bool> _breakableLockDoors;
     private readonly ModConfig<bool> _threadMechanismDoors;
@@ -602,7 +601,6 @@ public sealed class OpenTheDoor : ModBase
 
     private OpenTheDoor() : base("OpenTheDoor", "1.0")
     {
-        _enabled = AddBoolConfig("Enable OpenTheDoor", true, key: "Enabled");
         _ordinaryDoors = AddBoolConfig("Normal one-way Doors", true, key: "EnableOrdinaryDoors");
         _breakableLockDoors = AddBoolConfig("Breakable lock Doors", true, key: "EnableBreakableLockDoors");
         _threadMechanismDoors = AddBoolConfig("Thread mechanism Doors", true, key: "EnableThreadMechanismDoors");
@@ -655,7 +653,7 @@ public sealed class OpenTheDoor : ModBase
         var address = args[1];
         // Unlock callbacks may synchronously announce again for this same door.
         if (_openingDoor == address) return PreHookResult.Skip;
-        if (!Instance._enabled.Value || _unlockDepth != 0) return PreHookResult.Continue;
+        if (_unlockDepth != 0) return PreHookResult.Continue;
 
         try
         {
@@ -705,7 +703,6 @@ public sealed class OpenTheDoor : ModBase
         DoorAttempt[] snapshot;
         lock (AttemptLock)
         {
-            if (!Instance._enabled.Value) Attempts.Clear();
             if (Attempts.Count == 0) return;
             snapshot = new DoorAttempt[Attempts.Count];
             Attempts.Values.CopyTo(snapshot, 0);
@@ -771,7 +768,7 @@ public sealed class OpenTheDoor : ModBase
 
     private static bool IsDoorEnabled(app.GimmickDoor door)
     {
-        if (!Instance._enabled.Value || door?.GimmickContext is null) return false;
+        if (door?.GimmickContext is null) return false;
         return GetDoorCategory(door) switch
         {
             DoorCategory.NormalOneWay => Instance._ordinaryDoors.Value,
@@ -984,7 +981,7 @@ public sealed class OpenTheDoor : ModBase
     [MethodHook(typeof(app.Gm053_001), "onGmInteract_Success", MethodHookType.Pre)]
     public static PreHookResult BeforeMaskDoorInteraction(Span<ulong> args)
     {
-        if (!Instance._enabled.Value || args.Length < 2) return PreHookResult.Continue;
+        if (args.Length < 2) return PreHookResult.Continue;
         try
         {
             var door = GetManagedObject<app.GimmickDoor>(args[1]);
@@ -1005,7 +1002,7 @@ public sealed class OpenTheDoor : ModBase
     [MethodHook(typeof(app.GimmickDoor), "interactEvent", MethodHookType.Pre)]
     public static PreHookResult BeforeInteractionEvent(Span<ulong> args)
     {
-        if (!Instance._enabled.Value || args.Length < 2) return PreHookResult.Continue;
+        if (args.Length < 2) return PreHookResult.Continue;
         try
         {
             var savedDoor = GetManagedObject<app.GimmickDoor>(args[1]);
@@ -1229,7 +1226,7 @@ public sealed class OpenTheDoor : ModBase
                 // 已上锁，无法打开 / 上鎖了，打不開 / It's locked and won't open.
                 via.Language.SimplelifiedChinese => "没上锁，可以打开",
                 via.Language.TransitionalChinese => "沒上鎖，打得開",
-                via.Language.English => "It's unlocked and will open.",
+                via.Language.English => "It's not locked and will open.",
                 _ => null,
             };
         return null;
