@@ -922,7 +922,7 @@ public sealed class Minimap : ModBase
     private const int TilePixels = 2048;
     private const float WorldToMapPixels = 6.4f;
     private const int TileSlotCount = 16;
-    private const string GuiResourcePath = "GUI/Minimap/MinimapMissionAreas.gui";
+    private const string GuiResourcePath = "GUI/Minimap/MinimapPins.gui";
     private const string GuiGameObjectName = "Minimap_GUI";
     private const string WindowName = "Minimap_Window";
     private const string GroupName = "Minimap_Group";
@@ -938,6 +938,7 @@ public sealed class Minimap : ModBase
     private const string HiddenChestMarkerPrefix = "Minimap_HiddenChestMarker_";
     private const string ChestMarkerPrefix = "Minimap_ChestMarker_";
     private const string LockedGateMarkerPrefix = "Minimap_LockedGateMarker_";
+    private const string PinMarkerPrefix = "Minimap_PinMarker_";
     private const string MissionRangePrefix = "Minimap_MissionRange_";
     private const string EntranceMarkerPrefix = "Minimap_EntranceMarker_";
     private const string LadderMarkerPrefix = "Minimap_LadderMarker_";
@@ -957,6 +958,7 @@ public sealed class Minimap : ModBase
     private const int ChestTakenSaveState = 15;
     private const int ChestMarkerCount = 16;
     private const int LockedGateMarkerCount = 24;
+    private const int PinMarkerCount = 41; // Up to 40 objectives and one manual pin.
     private const int MissionRangeCount = 16;
     private const int EntranceMarkerCount = 16;
     private const int LadderMarkerCount = 32;
@@ -988,6 +990,10 @@ public sealed class Minimap : ModBase
     private const uint EyeHideWallIconPattern = 2;
     private const uint InvasionWallIconPattern = 8;
     private const uint LockedGateIconPattern = 10; // Native red padlock in uvs000122.
+    private const uint OneWayGateIconPattern = 12;
+    private const uint AutoPinIconPattern = 11; // uvs000120 TARGET / FREE / BOTH.
+    private const uint ManualPinIconPattern = 12;
+    private const uint CombinedPinIconPattern = 13;
     private const uint ChestIconPattern = 2;
     private const uint EntranceIconPattern = 7;
     private const uint LadderIconPattern = 9;
@@ -1041,6 +1047,7 @@ public sealed class Minimap : ModBase
     private static readonly List<MarkerPosition> HiddenChestPositions = new();
     private static readonly List<MarkerPosition> ChestPositions = new();
     private static readonly List<MarkerPosition> LockedGatePositions = new();
+    private static readonly List<MarkerPosition> PinPositions = new();
     private static readonly List<MissionRange> MissionRanges = new();
     private static readonly List<MarkerPosition> EntrancePositions = new();
     private static readonly List<MarkerPosition> LadderPositions = new();
@@ -1065,6 +1072,7 @@ public sealed class Minimap : ModBase
     private readonly ModConfig<bool> _showLadders;
     private readonly ModConfig<bool> _showCollectibles;
     private readonly ModConfig<bool> _showMissions;
+    private readonly ModConfig<bool> _showPins;
     private readonly ModConfig<bool> _showFootprints;
     private bool _isVisible = true;
 
@@ -1087,6 +1095,7 @@ public sealed class Minimap : ModBase
     private static via.gui.Texture[] _hiddenChestMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _chestMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _lockedGateMarkers = Array.Empty<via.gui.Texture>();
+    private static via.gui.Texture[] _pinMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Circle[] _missionRanges = Array.Empty<via.gui.Circle>();
     private static via.gui.Texture[] _entranceMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _ladderMarkers = Array.Empty<via.gui.Texture>();
@@ -1101,6 +1110,7 @@ public sealed class Minimap : ModBase
     private static int _errorReported;
     private static int _markerErrorReported;
     private static int _missionErrorReported;
+    private static int _pinErrorReported;
     private static int _chestErrorReported;
     private static int _cleanupErrorReported;
 
@@ -1126,11 +1136,13 @@ public sealed class Minimap : ModBase
         _showOniWalls = AddBoolConfig("Show Oni walls", true);
         _showChests = AddBoolConfig("Show chests", true);
         _showHiddenChests = AddBoolConfig("Show hidden chests", true);
-        _showLockedGates = AddBoolConfig("Show locked doors", true);
+        _showLockedGates = AddBoolConfig(
+            "Show locked doors / one-way passages", true, key: "Show locked doors");
         _showEntrances = AddBoolConfig("Show area entrances/exits", true);
         _showLadders = AddBoolConfig("Show ladders", true);
         _showCollectibles = AddBoolConfig("Show collectibles", true);
         _showMissions = AddBoolConfig("Show missions", true);
+        _showPins = AddBoolConfig("Show map markers", true);
         _showFootprints = AddBoolConfig("Show footprints", true);
     }
 
@@ -1151,6 +1163,7 @@ public sealed class Minimap : ModBase
         _errorReported = 0;
         _markerErrorReported = 0;
         _missionErrorReported = 0;
+        _pinErrorReported = 0;
         _chestErrorReported = 0;
         _cleanupErrorReported = 0;
         Instance.UnloadMod();
@@ -1729,6 +1742,7 @@ public sealed class Minimap : ModBase
             view, ChestMarkerPrefix, ChestMarkerCount);
         var lockedGateMarkers = FindOptionalTextures(
             view, LockedGateMarkerPrefix, LockedGateMarkerCount);
+        var pinMarkers = FindOptionalTextures(view, PinMarkerPrefix, PinMarkerCount);
         var missionRanges = new via.gui.Circle[MissionRangeCount];
         for (var index = 0; index < missionRanges.Length; ++index)
         {
@@ -1772,6 +1786,7 @@ public sealed class Minimap : ModBase
         _chestMarkers = chestMarkers;
         _hiddenChestMarkers = hiddenChestMarkers;
         _lockedGateMarkers = lockedGateMarkers;
+        _pinMarkers = pinMarkers;
         _missionRanges = missionRanges;
         _entranceMarkers = entranceMarkers;
         _ladderMarkers = ladderMarkers;
@@ -1843,6 +1858,7 @@ public sealed class Minimap : ModBase
                      _chestMarkers,
                      _hiddenChestMarkers,
                      _lockedGateMarkers,
+                     _pinMarkers,
                      _entranceMarkers,
                      _ladderMarkers,
                      _collectibleMarkers,
@@ -1886,6 +1902,7 @@ public sealed class Minimap : ModBase
             $"chests={_chestMarkers.Length}/{ChestMarkerCount}, " +
             $"hiddenChests={_hiddenChestMarkers.Length}/{HiddenChestMarkerCount}, " +
             $"lockedDoors={_lockedGateMarkers.Length}/{LockedGateMarkerCount}, " +
+            $"pins={_pinMarkers.Length}/{PinMarkerCount}, " +
             $"missionRanges={_missionRanges.Length}/{MissionRangeCount}, " +
             $"entrances={_entranceMarkers.Length}/{EntranceMarkerCount}, " +
             $"ladders={_ladderMarkers.Length}/{LadderMarkerCount}, " +
@@ -2276,6 +2293,7 @@ public sealed class Minimap : ModBase
                 RefreshMapObjectMarkers();
                 RefreshChestMarkers();
                 RefreshMissionMarkers();
+                RefreshPinMarkers();
                 _nextMarkerRefreshTick =
                     Environment.TickCount64 + MarkerRefreshMilliseconds;
             }
@@ -2480,6 +2498,18 @@ public sealed class Minimap : ModBase
                 SetVisible(_missionMarkers, false);
             }
 
+            if (Instance._showPins.Value)
+            {
+                UpdateMapObjectMarkers(
+                    PinPositions, _pinMarkers, 48.0f,
+                    playerX, playerZ, left, top, width, height,
+                    pixelsPerMeter, mapSign, cosine, sine, markerScale, isCircle);
+            }
+            else
+            {
+                SetVisible(_pinMarkers, false);
+            }
+
             UpdateMissionRanges(
                 playerX, playerZ, left, top, width, height,
                 pixelsPerMeter, mapSign, cosine, sine);
@@ -2601,6 +2631,23 @@ public sealed class Minimap : ModBase
                                 position.x, position.z, LockedGateIconPattern));
                         }
                         break;
+                    case app.EnvDef.MAP_OBJECT_TYPE_Fixed.ONEWAY_GATE:
+                        if (data.isEnable() && !package.isReleaseObject(data.MainID, data.SubID))
+                        {
+                            var rotation = data.Rotation;
+                            var forwardX = 2.0f * (rotation.x * rotation.z + rotation.w * rotation.y);
+                            var forwardZ = 1.0f - 2.0f * (rotation.x * rotation.x + rotation.y * rotation.y);
+                            // Atlas pattern 12 points right; project the gate's
+                            // forward direction onto the same X/Z axes as the map.
+                            var angle = MathF.Atan2(forwardZ, forwardX) * (180.0f / MathF.PI);
+                            if (float.IsFinite(angle))
+                            {
+                                lockedGates.Add(new MarkerPosition(
+                                    position.x, position.z, OneWayGateIconPattern,
+                                    rotationDegrees: angle));
+                            }
+                        }
+                        break;
                     case app.EnvDef.MAP_OBJECT_TYPE_Fixed.LADDER:
                         ladders.Add(new MarkerPosition(
                             position.x, position.z, LadderIconPattern));
@@ -2638,6 +2685,7 @@ public sealed class Minimap : ModBase
         ChestPositions.Clear();
         HiddenChestPositions.Clear();
         LockedGatePositions.Clear();
+        PinPositions.Clear();
         MissionRanges.Clear();
         EntrancePositions.Clear();
         LadderPositions.Clear();
@@ -2922,6 +2970,103 @@ public sealed class Minimap : ModBase
         }
     }
 
+    private static void RefreshPinMarkers()
+    {
+        PinPositions.Clear();
+        var map = _map;
+        if (!Instance._showPins.Value || map is null) return;
+
+        try
+        {
+            var info = API.GetManagedSingletonT<app.EnvironmentManager>()?.EnvInfoManager;
+            if (!IsAlive(info)) return;
+            var save = API.GetManagedSingletonT<app.SaveDataManager>();
+            var cache = save?.UserSaveData?.MapCache;
+            var helper = save?.Helper?.MapCache;
+            var hasCache = IsAlive(cache);
+            var pins = new List<MarkerPosition>();
+            var beacons = API.GetManagedSingletonT<app.StoryManager>()?.getObjectiveBeaconInfoAll();
+            if (IsAlive(beacons))
+            {
+                for (var i = 0; i < Math.Min(beacons.Count, MaxMissionBeaconsToInspect); ++i)
+                {
+                    var beacon = beacons[i];
+                    if (!beacon.IsSet || !IsAlive(beacon.AreaID)) continue;
+                    // Match GUI060000.cMissionIcon.isPin: converted mission ID + index.
+                    var manual = hasCache && IsAlive(helper) &&
+                        beacon.MissionID == helper.PinInfoMissionID &&
+                        beacon.Index == cache.PinInfoMissionIndex;
+                    if (!beacon.IsSelected && !manual) continue;
+                    var area = (app.EnvDef.AreaID_Fixed)beacon.AreaID.Value;
+                    var position = beacon.Pos;
+                    if (!map.AreaFields.TryGetValue(area, out var floors) ||
+                        !IsFinitePosition(position) ||
+                        !floors.Contains(info.getFieldOrder(area, position))) continue;
+                    pins.Add(AttachedPin(position, manual
+                        ? (beacon.IsSelected ? CombinedPinIconPattern : ManualPinIconPattern)
+                        : AutoPinIconPattern));
+                }
+            }
+
+            if (hasCache && cache.PinInfoStageFixedID == map.StageKey &&
+                cache.PinInfoMapNo == map.AreaIndex)
+            {
+                var mainId = cache.PinInfoObjectMainID;
+                if (mainId != _System.Guid.Empty)
+                {
+                    var area = (app.EnvDef.AreaID_Fixed)cache.PinInfoAreaFixedID;
+                    var packages = info.getAllMapObjectData();
+                    if (map.AreaFields.TryGetValue(area, out var floors) && IsAlive(packages))
+                    {
+                        for (var p = 0; p < packages.Count; ++p)
+                        {
+                            var package = packages[p];
+                            if (!IsAlive(package) || package.AreaID != area) continue;
+                            var objects = package.getDisplayList();
+                            if (!IsAlive(objects)) continue;
+                            for (var i = 0; i < Math.Min(objects.Count, MaxChestObjectsToInspect); ++i)
+                            {
+                                var data = objects[i];
+                                if (!IsAlive(data) || data.MainID != mainId ||
+                                    data.SubID != cache.PinInfoObjectSubID ||
+                                    !floors.Contains(data.FieldOrder) ||
+                                    !IsFinitePosition(data.Position)) continue;
+                                pins.Add(AttachedPin(data.Position, ManualPinIconPattern));
+                                break;
+                            }
+                        }
+                    }
+                }
+                else if (cache.PinInfoMissionID == 0x46805c80 &&
+                         IsFinitePosition(cache.PinInfoPosition))
+                {
+                    // Free pins use the saved map sheet; their Y is the sheet's
+                    // configured pin height, not a reliable floor sample.
+                    var position = cache.PinInfoPosition;
+                    pins.Add(new MarkerPosition(position.x, position.z, ManualPinIconPattern));
+                }
+            }
+
+            PinPositions.AddRange(pins);
+            Volatile.Write(ref _pinErrorReported, 0);
+        }
+        catch (Exception exception)
+        {
+            if (Interlocked.Exchange(ref _pinErrorReported, 1) == 0)
+            {
+                Instance.Log($"Map pin refresh will retry: {exception}", ModLogLevel.Error);
+            }
+        }
+    }
+
+    private static bool IsFinitePosition(via.vec3 position) =>
+        float.IsFinite(position.x) && float.IsFinite(position.y) && float.IsFinite(position.z);
+
+    private static MarkerPosition AttachedPin(via.vec3 position, uint pattern) =>
+        // Native lib000121/122: 44px pin on a 64px icon, offset (11, -11).
+        new(position.x, position.z, pattern, sizeScale: 44.0f / 64.0f,
+            offsetX: 8.25f, offsetY: -8.25f);
+
     private static void UpdateMissionRanges(
         float playerX, float playerZ, float left, float top,
         float width, float height, float pixelsPerMeter,
@@ -3004,10 +3149,10 @@ public sealed class Minimap : ModBase
         float markerScale,
         bool isCircle)
     {
-        var markerSize = baseMarkerSize * markerScale;
         var used = 0;
         foreach (var marker in positions)
         {
+            var markerSize = baseMarkerSize * markerScale * marker.SizeScale;
             if (used >= textures.Length)
             {
                 break;
@@ -3028,7 +3173,8 @@ public sealed class Minimap : ModBase
                     markerSize,
                     isCircle,
                     out var x,
-                    out var y))
+                    out var y,
+                    marker.OffsetX * markerScale, marker.OffsetY * markerScale))
             {
                 continue;
             }
@@ -3050,7 +3196,10 @@ public sealed class Minimap : ModBase
                 y,
                 markerSize,
                 markerSize,
-                0.0f);
+                float.IsFinite(marker.RotationDegrees)
+                    ? marker.RotationDegrees + MathF.Atan2(sine, cosine) * (180.0f / MathF.PI) +
+                      (mapSign < 0.0f ? 180.0f : 0.0f)
+                    : 0.0f);
             ++used;
         }
 
@@ -3156,14 +3305,15 @@ public sealed class Minimap : ModBase
         float markerRadius,
         bool isCircle,
         out float x,
-        out float y)
+        out float y,
+        float offsetX = 0.0f, float offsetY = 0.0f)
     {
         var centerX = left + width * 0.5f;
         var centerY = top + height * 0.5f;
         var sourceX = (marker.X - playerX) * pixelsPerMeter * mapSign;
         var sourceY = (marker.Z - playerZ) * pixelsPerMeter * mapSign;
-        x = centerX + cosine * sourceX - sine * sourceY;
-        y = centerY + sine * sourceX + cosine * sourceY;
+        x = centerX + cosine * sourceX - sine * sourceY + offsetX;
+        y = centerY + sine * sourceX + cosine * sourceY + offsetY;
         var radius = markerRadius * 0.5f;
         if (!float.IsFinite(x) || !float.IsFinite(y) ||
             x < left + radius || x > left + width - radius ||
@@ -3222,6 +3372,7 @@ public sealed class Minimap : ModBase
 
     private static void HideNativeMarkers()
     {
+        SetVisible(_pinMarkers, false);
         SetVisible(_lockedGateMarkers, false);
         foreach (var circle in _missionRanges)
         {
@@ -3524,6 +3675,7 @@ public sealed class Minimap : ModBase
         _chestMarkers = Array.Empty<via.gui.Texture>();
         _hiddenChestMarkers = Array.Empty<via.gui.Texture>();
         _lockedGateMarkers = Array.Empty<via.gui.Texture>();
+        _pinMarkers = Array.Empty<via.gui.Texture>();
         _missionRanges = Array.Empty<via.gui.Circle>();
         _entranceMarkers = Array.Empty<via.gui.Texture>();
         _ladderMarkers = Array.Empty<via.gui.Texture>();
@@ -3702,13 +3854,19 @@ public sealed class Minimap : ModBase
     {
         public MarkerPosition(
             float x, float z, uint iconPatternNo = 0, uint iconSequenceNo = 0,
-            MarkerColor color = MarkerColor.Original)
+            MarkerColor color = MarkerColor.Original,
+            float rotationDegrees = float.NaN, float sizeScale = 1.0f,
+            float offsetX = 0.0f, float offsetY = 0.0f)
         {
             X = x;
             Z = z;
             IconPatternNo = iconPatternNo;
             IconSequenceNo = iconSequenceNo;
             Color = color;
+            RotationDegrees = rotationDegrees;
+            SizeScale = sizeScale;
+            OffsetX = offsetX;
+            OffsetY = offsetY;
         }
 
         public float X { get; }
@@ -3716,6 +3874,10 @@ public sealed class Minimap : ModBase
         public uint IconPatternNo { get; }
         public uint IconSequenceNo { get; }
         public MarkerColor Color { get; }
+        public float RotationDegrees { get; }
+        public float SizeScale { get; }
+        public float OffsetX { get; }
+        public float OffsetY { get; }
     }
 
     private sealed class MapTile
