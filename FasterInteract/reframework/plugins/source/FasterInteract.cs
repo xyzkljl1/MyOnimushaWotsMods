@@ -561,6 +561,7 @@ public sealed class FasterInteract : ModBase
         OniWall,
         Door,
         TreasureBox,
+        DogInteraction,
         Ladder,
     }
 
@@ -571,6 +572,8 @@ public sealed class FasterInteract : ModBase
         OriginalDoorLayerSpeeds = new();
     private static readonly System.Collections.Generic.Dictionary<ulong, float>
         OriginalTreasureBoxLayerSpeeds = new();
+    private static readonly System.Collections.Generic.Dictionary<ulong, float>
+        OriginalDogLayerSpeeds = new();
     [ThreadStatic]
     private static ulong _enteringPlayerAction;
     [ThreadStatic]
@@ -583,21 +586,28 @@ public sealed class FasterInteract : ModBase
     private static float _originalHorizontalElevatorMoveSpeed;
     [ThreadStatic]
     private static ulong _gettingLadderMoveSpeed;
+    [ThreadStatic]
+    private static ulong _updatingDogInteractionAction;
     private static ulong _modifiedAction;
+    private static ulong _preparedDogInteractionAction;
     private static ulong _acceleratedDoor;
     private static ulong _acceleratedTreasureBox;
+    private static ulong _acceleratedDog;
+    private static float _originalDogCompletionDelayLimit;
     private static InteractionFeature _activeFeature;
     private static bool _originalOverrideEnabled;
     private static float _originalOverrideSpeed;
+    private static bool _originalDisableCameraAutoFollowRotate;
 
     private readonly ModConfig<float> _interactionSpeed;
     private readonly ModConfig<bool> _oniWallEnabled;
     private readonly ModConfig<bool> _doorEnabled;
     private readonly ModConfig<bool> _treasureBoxEnabled;
     private readonly ModConfig<bool> _elevatorEnabled;
+    private readonly ModConfig<bool> _dogInteractionEnabled;
     private readonly ModConfig<bool> _ladderEnabled;
 
-    private FasterInteract() : base("FasterInteract", "1.3")
+    private FasterInteract() : base("FasterInteract", "1.4")
     {
         _interactionSpeed = AddFloatConfig(
             "Interaction speed",
@@ -622,6 +632,10 @@ public sealed class FasterInteract : ModBase
             "Enable elevator acceleration",
             true,
             key: "ElevatorDescentEnabled");
+        _dogInteractionEnabled = AddBoolConfig(
+            "Enable dog interaction acceleration",
+            true,
+            key: "DogInteractionEnabled");
         _ladderEnabled = AddBoolConfig(
             "Enable ladder acceleration",
             true,
@@ -644,6 +658,9 @@ public sealed class FasterInteract : ModBase
         _updatingElevator = 0;
         _updatingHorizontalElevator = 0;
         _gettingLadderMoveSpeed = 0;
+        _updatingDogInteractionAction = 0;
+        _preparedDogInteractionAction = 0;
+        RestoreDogCompletionDelay();
         Instance.UnloadMod();
     }
 
@@ -932,6 +949,146 @@ public sealed class FasterInteract : ModBase
     }
 
     [MethodHook(
+        typeof(app.PlayerCommonAction.cPetDogBase),
+        "detailUpdate",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeDogInteractionUpdate(Span<ulong> args)
+    {
+        _updatingDogInteractionAction = args.Length > 1 ? args[1] : 0;
+        try
+        {
+            if (args.Length > 1)
+            {
+                ApplyPlayerActionSpeed(args[1], applyMotionLayers: true);
+                PrepareDogInteractionPosition(args[1]);
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to update dog interaction speed",
+                exception);
+        }
+
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.PlayerCommonAction.cPetDogBase),
+        "detailUpdate",
+        MethodHookType.Post)]
+    public static void AfterDogInteractionUpdate(ref ulong returnValue)
+    {
+        var actionAddress = _updatingDogInteractionAction;
+        _updatingDogInteractionAction = 0;
+        if (actionAddress != _modifiedAction ||
+            _activeFeature != InteractionFeature.DogInteraction)
+        {
+            return;
+        }
+
+        try
+        {
+            StabilizeDogInteractionPosition(actionAddress);
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to stabilize dog interaction position",
+                exception);
+        }
+    }
+
+    [MethodHook(
+        typeof(app.PlayerCommonAction.cPetDogReactionBase),
+        "detailUpdate",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeDogReactionUpdate(Span<ulong> args)
+    {
+        try
+        {
+            if (args.Length > 1)
+            {
+                ApplyPlayerActionSpeed(args[1], applyMotionLayers: true);
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to update dog reaction speed",
+                exception);
+        }
+
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.PlayerCommonAction.cPetDogReactionBase),
+        "isToEnd",
+        MethodHookType.Post)]
+    public static void AfterDogReactionShouldEnd(ref ulong returnValue)
+    {
+        try
+        {
+            if (_activeFeature == InteractionFeature.DogInteraction &&
+                Instance._dogInteractionEnabled.Value &&
+                GetInteractionSpeed() > 1.0f)
+            {
+                // 暂定。原版不会自动起身。
+                returnValue = 1;
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to finish dog interaction stance",
+                exception);
+        }
+    }
+
+    [MethodHook(
+        typeof(app.Eu004_001),
+        "changeState",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeDogStateChange(Span<ulong> args)
+    {
+        if (args.Length > 2 &&
+            args[1] == _acceleratedDog &&
+            (app.Eu004_001.STATE)(byte)args[2] == app.Eu004_001.STATE.FINISH)
+        {
+            RestoreDogCompletionDelay();
+        }
+
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.Eu004_001),
+        "doUpdateBegin",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeDogUpdate(Span<ulong> args)
+    {
+        try
+        {
+            if (args.Length > 1 && args[1] == _acceleratedDog)
+            {
+                ApplyGimmickLayerSpeeds(
+                    _acceleratedDog,
+                    GetInteractionSpeed(),
+                    OriginalDogLayerSpeeds);
+            }
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to update dog animation speed",
+                exception);
+        }
+
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
         typeof(app.PlayerCommonAction.cLadderActionBase),
         "detailUpdate",
         MethodHookType.Pre)]
@@ -1060,6 +1217,8 @@ public sealed class FasterInteract : ModBase
             _activeFeature = feature;
             _originalOverrideEnabled = action._UseOverrideMotionSpeed;
             _originalOverrideSpeed = action._OverrideMotionSpeed;
+            _originalDisableCameraAutoFollowRotate =
+                action._IsDisableCameraAutoFollowRotate;
             if (feature == InteractionFeature.Door)
             {
                 BeginDoorAcceleration(gimmickAddress);
@@ -1067,6 +1226,11 @@ public sealed class FasterInteract : ModBase
             else if (feature == InteractionFeature.TreasureBox)
             {
                 BeginTreasureBoxAcceleration(gimmickAddress);
+            }
+            else if (feature == InteractionFeature.DogInteraction)
+            {
+                action._IsDisableCameraAutoFollowRotate = true;
+                BeginDogCollectionAcceleration();
             }
         }
 
@@ -1100,6 +1264,13 @@ public sealed class FasterInteract : ModBase
         gimmickAddress = 0;
         var typeName = (actionObject as IObject)
             ?.GetTypeDefinition()?.FullName;
+        if (IsDogInteractionAction(typeName))
+        {
+            return Instance._dogInteractionEnabled.Value
+                ? InteractionFeature.DogInteraction
+                : InteractionFeature.None;
+        }
+
         if (Instance._ladderEnabled.Value && IsAcceleratedLadderAction(typeName))
         {
             return InteractionFeature.Ladder;
@@ -1124,7 +1295,8 @@ public sealed class FasterInteract : ModBase
             ? ManagedObject.ToManagedObject(gimmickAddress)
             : null;
         if (Instance._doorEnabled.Value &&
-            gimmickObject?.TryAs<app.GimmickDoor>() is not null)
+            gimmickObject?.TryAs<app.GimmickDoor>() is not null &&
+            gimmickObject.TryAs<app.Gm052_002>() is null)
         {
             return InteractionFeature.Door;
         }
@@ -1144,9 +1316,15 @@ public sealed class FasterInteract : ModBase
             InteractionFeature.OniWall => Instance._oniWallEnabled.Value,
             InteractionFeature.Door => Instance._doorEnabled.Value,
             InteractionFeature.TreasureBox => Instance._treasureBoxEnabled.Value,
+            InteractionFeature.DogInteraction =>
+                Instance._dogInteractionEnabled.Value,
             InteractionFeature.Ladder => Instance._ladderEnabled.Value,
             _ => false,
         };
+
+    private static bool IsDogInteractionAction(string typeName) =>
+        typeName == "app.PlayerBasicAction.cPetDog" ||
+        typeName == "app.PlayerBasicAction.cPetDogReaction";
 
     private static bool IsAcceleratedLadderAction(string typeName) =>
         typeName?.Contains(".cLadderClimb", StringComparison.Ordinal) == true &&
@@ -1239,6 +1417,161 @@ public sealed class FasterInteract : ModBase
     private static void RestorePlayerLayerSpeeds()
     {
         RestoreLayerSpeeds(OriginalPlayerLayerSpeeds);
+    }
+
+    private static void PrepareDogInteractionPosition(ulong actionAddress)
+    {
+        if (actionAddress == _preparedDogInteractionAction ||
+            actionAddress != _modifiedAction ||
+            _activeFeature != InteractionFeature.DogInteraction)
+        {
+            return;
+        }
+
+        var action = GetManagedObject<
+            app.PlayerCommonAction.cInteractEnvUnitBase>(actionAddress);
+        var target = action?._InterpolatePos;
+        var transform = API.GetManagedSingletonT<app.PlayerManager>()
+            ?.getControllingPlayerInfo()?.Character?.GameObject?.Transform;
+        if (target is null || transform is null ||
+            !float.IsFinite(target.x) ||
+            !float.IsFinite(target.y) ||
+            !float.IsFinite(target.z))
+        {
+            return;
+        }
+
+        var current = transform.Position;
+        if (current is null)
+        {
+            return;
+        }
+
+        var x = target.x - current.x;
+        var y = target.y - current.y;
+        var z = target.z - current.z;
+        if (x * x + y * y + z * z <= 16.0f)
+        {
+            current.x = target.x;
+            current.z = target.z;
+            transform.Position = current;
+            action!._StartPos = current;
+            _preparedDogInteractionAction = actionAddress;
+        }
+    }
+
+    private static void StabilizeDogInteractionPosition(ulong actionAddress)
+    {
+        var action = GetManagedObject<
+            app.PlayerCommonAction.cInteractEnvUnitBase>(actionAddress);
+        var target = action?._InterpolatePos;
+        var transform = API.GetManagedSingletonT<app.PlayerManager>()
+            ?.getControllingPlayerInfo()?.Character?.GameObject?.Transform;
+        var current = transform?.Position;
+        if (target is null || transform is null || current is null ||
+            !float.IsFinite(target.x) || !float.IsFinite(target.z))
+        {
+            return;
+        }
+
+        var x = target.x - current.x;
+        var z = target.z - current.z;
+        if (x * x + z * z > 16.0f)
+        {
+            return;
+        }
+
+        current.x = target.x;
+        current.z = target.z;
+        transform.Position = current;
+    }
+
+    private static void BeginDogCollectionAcceleration()
+    {
+        var scene = via.SceneManager.CurrentScene;
+        var playerPosition = API.GetManagedSingletonT<app.PlayerManager>()
+            ?.getControllingPlayerInfo()?.Character?.GameObject?.Transform?.Position;
+        if (scene is null || playerPosition is null)
+        {
+            return;
+        }
+
+        var dogs = scene.findComponents(
+            app.Eu004_001.REFType.RuntimeType.As<_System.Type>());
+        var nearestDistanceSquared = 16.0f;
+        var nearestDog = 0ul;
+        for (var index = 0;
+             dogs is not null && index < Math.Min(dogs.Length, 256);
+             index++)
+        {
+            var address = (dogs[index] as IProxyable)?.GetAddress() ?? 0;
+            var dog = ManagedObject.IsManagedObject(address)
+                ? ManagedObject.ToManagedObject(address)?.TryAs<app.Eu004_001>()
+                : null;
+            var position = dog?.GameObject?.Transform?.Position;
+            if (dog is null || position is null ||
+                dog._State == app.Eu004_001.STATE.FINISH)
+            {
+                continue;
+            }
+
+            var x = playerPosition.x - position.x;
+            var y = playerPosition.y - position.y;
+            var z = playerPosition.z - position.z;
+            var distanceSquared = x * x + y * y + z * z;
+            if (distanceSquared < nearestDistanceSquared)
+            {
+                nearestDistanceSquared = distanceSquared;
+                nearestDog = address;
+            }
+        }
+
+        if (nearestDog != 0)
+        {
+            if (nearestDog == _acceleratedDog)
+            {
+                return;
+            }
+
+            RestoreDogCompletionDelay();
+            _acceleratedDog = nearestDog;
+            var dog = GetManagedObject<app.Eu004_001>(nearestDog);
+            var delayTimer = dog?._EffectUnique4DelayTimer;
+            if (delayTimer is not null)
+            {
+                _originalDogCompletionDelayLimit = delayTimer.Limit;
+                if (float.IsFinite(_originalDogCompletionDelayLimit) &&
+                    _originalDogCompletionDelayLimit > 0.0f)
+                {
+                    delayTimer.Limit =
+                        _originalDogCompletionDelayLimit / GetInteractionSpeed();
+                    dog!._EffectUnique4DelayTimer = delayTimer;
+                }
+            }
+
+            ApplyGimmickLayerSpeeds(
+                nearestDog,
+                GetInteractionSpeed(),
+                OriginalDogLayerSpeeds);
+        }
+    }
+
+    private static void RestoreDogCompletionDelay()
+    {
+        var dogAddress = _acceleratedDog;
+        _acceleratedDog = 0;
+        if (ManagedObject.IsManagedObject(dogAddress))
+        {
+            var dog = GetManagedObject<app.Eu004_001>(dogAddress);
+            var delayTimer = dog?._EffectUnique4DelayTimer;
+            if (dog is not null && delayTimer is not null)
+            {
+                delayTimer.Limit = _originalDogCompletionDelayLimit;
+                dog._EffectUnique4DelayTimer = delayTimer;
+            }
+        }
+
+        RestoreLayerSpeeds(OriginalDogLayerSpeeds);
     }
 
     private static void BeginDoorAcceleration(ulong doorAddress)
@@ -1379,6 +1712,11 @@ public sealed class FasterInteract : ModBase
     {
         var actionAddress = _modifiedAction;
         _modifiedAction = 0;
+        if (_preparedDogInteractionAction == actionAddress)
+        {
+            _preparedDogInteractionAction = 0;
+        }
+
         if (!ManagedObject.IsManagedObject(actionAddress))
         {
             return;
@@ -1393,5 +1731,7 @@ public sealed class FasterInteract : ModBase
 
         action._UseOverrideMotionSpeed = _originalOverrideEnabled;
         action._OverrideMotionSpeed = _originalOverrideSpeed;
+        action._IsDisableCameraAutoFollowRotate =
+            _originalDisableCameraAutoFollowRotate;
     }
 }
