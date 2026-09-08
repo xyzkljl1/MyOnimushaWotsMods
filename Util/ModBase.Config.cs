@@ -142,19 +142,21 @@ public abstract partial class ModBase
     protected ModConfig<bool> AddBoolConfig(
         string name,
         bool defaultValue,
-        string key = null) =>
+        string key = null,
+        bool animatedTitle = false) =>
         AddConfig(
             name,
             defaultValue,
-            static (string label, ref bool value) =>
-                Hexa.NET.ImGui.ImGui.Checkbox(label, ref value),
+            (string label, ref bool value) =>
+                DrawCheckbox(label, ref value, animatedTitle),
             key);
 
     protected ModConfig<ModColor> AddColorConfig(
         string name,
         ModColor defaultValue,
         float maximumComponent = 4.0f,
-        string key = null)
+        string key = null,
+        bool animatedTitle = false)
     {
         if (!float.IsFinite(maximumComponent) || maximumComponent <= 0.0f)
         {
@@ -165,7 +167,7 @@ public abstract partial class ModBase
             name,
             defaultValue,
             (string label, ref ModColor value) =>
-                DrawColorPicker(label, ref value, maximumComponent),
+                DrawColorPicker(label, ref value, maximumComponent, animatedTitle),
             key);
     }
 
@@ -174,7 +176,8 @@ public abstract partial class ModBase
         int defaultValue,
         string[] options,
         bool sameLine = true,
-        string key = null)
+        string key = null,
+        bool animatedTitle = false)
     {
         System.ArgumentNullException.ThrowIfNull(options);
         if (options.Length == 0)
@@ -199,7 +202,7 @@ public abstract partial class ModBase
             name,
             defaultValue,
             (string label, ref int value) =>
-                DrawRadioGroup(label, ref value, labels, sameLine),
+                DrawRadioGroup(label, ref value, labels, sameLine, animatedTitle),
             key);
     }
 
@@ -209,17 +212,13 @@ public abstract partial class ModBase
         int minimum,
         int maximum,
         string format = "%d",
-        string key = null) =>
+        string key = null,
+        bool animatedTitle = false) =>
         AddConfig(
             name,
             defaultValue,
             (string label, ref int value) =>
-                Hexa.NET.ImGui.ImGui.SliderInt(
-                    label,
-                    ref value,
-                    minimum,
-                    maximum,
-                    format),
+                DrawIntSlider(label, ref value, minimum, maximum, format, animatedTitle),
             key);
 
     protected ModConfig<float> AddFloatConfig(
@@ -228,17 +227,13 @@ public abstract partial class ModBase
         float minimum,
         float maximum,
         string format = "%.2f",
-        string key = null) =>
+        string key = null,
+        bool animatedTitle = false) =>
         AddConfig(
             name,
             defaultValue,
             (string label, ref float value) =>
-                Hexa.NET.ImGui.ImGui.SliderFloat(
-                    label,
-                    ref value,
-                    minimum,
-                    maximum,
-                    format),
+                DrawFloatSlider(label, ref value, minimum, maximum, format, animatedTitle),
             key);
 
     protected ModConfig<float> AddPixelInputConfig(
@@ -246,7 +241,8 @@ public abstract partial class ModBase
         float defaultValue,
         float minimum,
         float maximum,
-        string key = null)
+        string key = null,
+        bool animatedTitle = false)
     {
         if (!float.IsFinite(defaultValue) || !float.IsFinite(minimum) ||
             !float.IsFinite(maximum) || minimum > maximum ||
@@ -259,7 +255,7 @@ public abstract partial class ModBase
             name,
             System.MathF.Round(defaultValue),
             (string label, ref float value) =>
-                DrawPixelInput(label, ref value, minimum, maximum),
+                DrawPixelInput(label, ref value, minimum, maximum, animatedTitle),
             key);
     }
 
@@ -294,10 +290,123 @@ public abstract partial class ModBase
     protected bool DrawButton(string label, string id) =>
         Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
 
+    // A shared four-second orange/blue cycle, evaluated only while drawing a title.
+    // Presentation never changes the stored configuration value or its dirty state.
+    private static System.Numerics.Vector4 GetAnimatedTitleColor()
+    {
+        var phase = (float)(Hexa.NET.ImGui.ImGui.GetTime() % 4.0) *
+                    (System.MathF.PI / 2.0f);
+        var blend = 0.5f - 0.5f * System.MathF.Cos(phase);
+        return System.Numerics.Vector4.Lerp(
+            new System.Numerics.Vector4(1.0f, 0.65f, 0.2f, 1.0f),
+            new System.Numerics.Vector4(0.3f, 0.7f, 1.0f, 1.0f),
+            blend);
+    }
+
+    protected static void DrawConfigTitle(string text, bool animatedTitle = false)
+    {
+        if (!animatedTitle)
+        {
+            Hexa.NET.ImGui.ImGui.TextUnformatted(text);
+            return;
+        }
+
+        Hexa.NET.ImGui.ImGui.PushStyleColor(
+            Hexa.NET.ImGui.ImGuiCol.Text, GetAnimatedTitleColor());
+        try
+        {
+            Hexa.NET.ImGui.ImGui.TextUnformatted(text);
+        }
+        finally
+        {
+            Hexa.NET.ImGui.ImGui.PopStyleColor();
+        }
+    }
+
+    private static bool DrawCheckbox(string label, ref bool value, bool animatedTitle)
+    {
+        if (!animatedTitle)
+        {
+            return Hexa.NET.ImGui.ImGui.Checkbox(label, ref value);
+        }
+
+        // Checkbox text has its own style color; the check mark is unaffected.
+        Hexa.NET.ImGui.ImGui.PushStyleColor(
+            Hexa.NET.ImGui.ImGuiCol.Text, GetAnimatedTitleColor());
+        try
+        {
+            return Hexa.NET.ImGui.ImGui.Checkbox(label, ref value);
+        }
+        finally
+        {
+            Hexa.NET.ImGui.ImGui.PopStyleColor();
+        }
+    }
+
+    private static void DrawSliderTitle(string label)
+    {
+        var separator = label.IndexOf("##", System.StringComparison.Ordinal);
+        var title = separator < 0 ? label : label[..separator];
+        Hexa.NET.ImGui.ImGui.SameLine(
+            0.0f, Hexa.NET.ImGui.ImGui.GetStyle().ItemInnerSpacing.X);
+        Hexa.NET.ImGui.ImGui.AlignTextToFramePadding();
+        DrawConfigTitle(title, animatedTitle: true);
+    }
+
+    private static bool DrawIntSlider(
+        string label, ref int value, int minimum, int maximum,
+        string format, bool animatedTitle)
+    {
+        if (!animatedTitle)
+        {
+            return Hexa.NET.ImGui.ImGui.SliderInt(label, ref value, minimum, maximum, format);
+        }
+
+        // Hide the built-in label so the slider's numeric value keeps its normal color.
+        // The widget ID is independent of the animated color.
+        Hexa.NET.ImGui.ImGui.BeginGroup();
+        try
+        {
+            var changed = Hexa.NET.ImGui.ImGui.SliderInt(
+                $"##{label}", ref value, minimum, maximum, format);
+            DrawSliderTitle(label);
+            return changed;
+        }
+        finally
+        {
+            Hexa.NET.ImGui.ImGui.EndGroup();
+        }
+    }
+
+    private static bool DrawFloatSlider(
+        string label, ref float value, float minimum, float maximum,
+        string format, bool animatedTitle,
+        Hexa.NET.ImGui.ImGuiSliderFlags flags = Hexa.NET.ImGui.ImGuiSliderFlags.None)
+    {
+        if (!animatedTitle)
+        {
+            return Hexa.NET.ImGui.ImGui.SliderFloat(label, ref value, minimum, maximum, format, flags);
+        }
+
+        Hexa.NET.ImGui.ImGui.BeginGroup();
+        try
+        {
+            var changed = Hexa.NET.ImGui.ImGui.SliderFloat(
+                $"##{label}", ref value, minimum, maximum, format, flags);
+            DrawSliderTitle(label);
+            return changed;
+        }
+        finally
+        {
+            Hexa.NET.ImGui.ImGui.EndGroup();
+        }
+    }
+
     private static bool DrawColorPicker(
         string label,
         ref ModColor value,
-        float maximumComponent)
+        float maximumComponent,
+        bool animatedTitle)
     {
         var preview = new System.Numerics.Vector3(
             NormalizeColorComponent(value.Red, maximumComponent),
@@ -313,7 +422,7 @@ public abstract partial class ModBase
                     Hexa.NET.ImGui.ImGuiColorEditFlags.NoLabel;
         var idSeparator = label.IndexOf("##", System.StringComparison.Ordinal);
         var visibleLabel = idSeparator < 0 ? label : label[..idSeparator];
-        Hexa.NET.ImGui.ImGui.TextUnformatted(visibleLabel);
+        DrawConfigTitle(visibleLabel, animatedTitle);
         changed |= Hexa.NET.ImGui.ImGui.ColorPicker3(label, ref preview, flags);
 
         var red = NormalizeColorComponent(preview.X, maximumComponent);
@@ -335,12 +444,13 @@ public abstract partial class ModBase
         string label,
         ref int value,
         string[] options,
-        bool sameLine)
+        bool sameLine,
+        bool animatedTitle)
     {
         var separator = label.IndexOf("##", System.StringComparison.Ordinal);
         var name = separator >= 0 ? label[..separator] : label;
         var id = separator >= 0 ? label[(separator + 2)..] : label;
-        Hexa.NET.ImGui.ImGui.TextUnformatted($"{name}:");
+        DrawConfigTitle($"{name}:", animatedTitle);
         Hexa.NET.ImGui.ImGui.SameLine();
 
         var changed = false;
@@ -374,7 +484,8 @@ public abstract partial class ModBase
         string label,
         ref float value,
         float minimum,
-        float maximum)
+        float maximum,
+        bool animatedTitle)
     {
         var original = value;
         if (!float.IsFinite(value))
@@ -402,8 +513,8 @@ public abstract partial class ModBase
         Hexa.NET.ImGui.ImGui.SameLine(0.0f, spacing);
         Hexa.NET.ImGui.ImGui.SetNextItemWidth(
             System.MathF.Max(1.0f, width - inputWidth - spacing));
-        changed |= Hexa.NET.ImGui.ImGui.SliderFloat(
-            label, ref value, minimum, maximum, "",
+        changed |= DrawFloatSlider(
+            label, ref value, minimum, maximum, "", animatedTitle,
             Hexa.NET.ImGui.ImGuiSliderFlags.AlwaysClamp);
         value = System.Math.Clamp(System.MathF.Round(value), minimum, maximum);
         return changed || value != original;

@@ -239,16 +239,19 @@ public abstract partial class ModBase
         bool ctrl = false,
         bool shift = false,
         bool alt = false,
-        string key = null) =>
+        string key = null,
+        bool animatedTitle = false) =>
         AddHotkeyConfig(
             name,
             new ModHotkey(defaultKey, ctrl, shift, alt),
-            key);
+            key,
+            animatedTitle);
 
     protected ModConfig<ModHotkey> AddHotkeyConfig(
         string name,
         ModHotkey defaultValue,
-        string key = null)
+        string key = null,
+        bool animatedTitle = false)
     {
         if (!defaultValue.IsValid)
         {
@@ -257,7 +260,11 @@ public abstract partial class ModBase
                 "The default hotkey must be a keyboard or gamepad key.");
         }
 
-        return AddConfig(name, defaultValue, DrawHotkeyConfig, key);
+        return AddConfig(
+            name, defaultValue,
+            (string label, ref ModHotkey value) =>
+                DrawHotkeyConfig(label, ref value, animatedTitle),
+            key);
     }
 
     protected bool IsHotkeyPressed(
@@ -271,7 +278,7 @@ public abstract partial class ModBase
         return isDown && !wasDown;
     }
 
-    private bool DrawHotkeyConfig(string label, ref ModHotkey value)
+    private bool DrawHotkeyConfig(string label, ref ModHotkey value, bool animatedTitle)
     {
         var isCapturing = string.Equals(
             _capturingHotkeyId,
@@ -289,9 +296,17 @@ public abstract partial class ModBase
         var separator = label.IndexOf("##", System.StringComparison.Ordinal);
         var name = separator >= 0 ? label[..separator] : label;
         var id = separator >= 0 ? label[separator..] : $"##{label}";
+        if (animatedTitle)
+        {
+            Hexa.NET.ImGui.ImGui.AlignTextToFramePadding();
+            DrawConfigTitle($"{name}:", animatedTitle: true);
+            Hexa.NET.ImGui.ImGui.SameLine();
+        }
+
+        var prefix = animatedTitle ? "" : $"{name}: ";
         var buttonText = isCapturing
-            ? $"{name}: press a key...{id}.Capture"
-            : $"{name}: {value}{id}.Capture";
+            ? $"{prefix}press a key...{id}.Capture"
+            : $"{prefix}{value}{id}.Capture";
         if (Hexa.NET.ImGui.ImGui.Button(buttonText))
         {
             _capturingHotkeyId = isCapturing ? null : label;
