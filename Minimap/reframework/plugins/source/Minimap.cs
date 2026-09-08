@@ -8,7 +8,7 @@ using REFrameworkNET.Callbacks;
 
 // BEGIN copied source: Util/ModBase.cs
 // Source blob SHA-1: 25417359db8c70a84c6f557d62440b857d2d6419
-// Source commit: 7eadaa1411ca922a2fbbf34f067928275e4c53ec
+// Source commit: 537a2d80892067d2e33016d8c6f521f922b1013c
 // I do this to avoid panicing users. Copying code everythere instead of publishing a DLL is indeed stupid, but users’ antivirus software is stupider.
 // Module: Mod identity, logging, one-time error reporting, and managed-object helpers.
 public enum ModLogLevel
@@ -94,11 +94,27 @@ public abstract partial class ModBase
 // END copied source: Util/ModBase.cs
 
 // BEGIN copied source: Util/ModBase.Config.cs
-// Source blob SHA-1: 23b9c5bcce310f6c969aa06b2652f0cc75136b72
-// Source commit: 7eadaa1411ca922a2fbbf34f067928275e4c53ec
+// Source blob SHA-1: 8aa5d2fa84e234fecb2249961835e33ad1f1c1de
+// Source commit: 537a2d80892067d2e33016d8c6f521f922b1013c
 // Module: ModBase configuration, persistence, and ImGui helpers.
 // Requires: Util/ModBase.cs from the same committed Git revision.
 public delegate bool ModConfigRenderer<T>(string label, ref T value);
+
+public struct ModColor
+{
+    public ModColor(float red, float green, float blue)
+    {
+        Red = red;
+        Green = green;
+        Blue = blue;
+    }
+
+    public float Red { get; set; }
+
+    public float Green { get; set; }
+
+    public float Blue { get; set; }
+}
 
 public interface IModConfigEntry
 {
@@ -232,6 +248,25 @@ public abstract partial class ModBase
                 Hexa.NET.ImGui.ImGui.Checkbox(label, ref value),
             key);
 
+    protected ModConfig<ModColor> AddColorConfig(
+        string name,
+        ModColor defaultValue,
+        float maximumComponent = 4.0f,
+        string key = null)
+    {
+        if (!float.IsFinite(maximumComponent) || maximumComponent <= 0.0f)
+        {
+            throw new System.ArgumentOutOfRangeException(nameof(maximumComponent));
+        }
+
+        return AddConfig(
+            name,
+            defaultValue,
+            (string label, ref ModColor value) =>
+                DrawColorPicker(label, ref value, maximumComponent),
+            key);
+    }
+
     protected ModConfig<int> AddRadioGroupConfig(
         string name,
         int defaultValue,
@@ -357,6 +392,43 @@ public abstract partial class ModBase
     protected bool DrawButton(string label, string id) =>
         Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
 
+    private static bool DrawColorPicker(
+        string label,
+        ref ModColor value,
+        float maximumComponent)
+    {
+        var preview = new System.Numerics.Vector3(
+            NormalizeColorComponent(value.Red, maximumComponent),
+            NormalizeColorComponent(value.Green, maximumComponent),
+            NormalizeColorComponent(value.Blue, maximumComponent));
+        var changed = preview.X != value.Red ||
+                      preview.Y != value.Green ||
+                      preview.Z != value.Blue;
+        var flags = Hexa.NET.ImGui.ImGuiColorEditFlags.Float |
+                    Hexa.NET.ImGui.ImGuiColorEditFlags.Hdr |
+                    Hexa.NET.ImGui.ImGuiColorEditFlags.PickerHueBar |
+                    Hexa.NET.ImGui.ImGuiColorEditFlags.NoSidePreview |
+                    Hexa.NET.ImGui.ImGuiColorEditFlags.NoLabel;
+        var idSeparator = label.IndexOf("##", System.StringComparison.Ordinal);
+        var visibleLabel = idSeparator < 0 ? label : label[..idSeparator];
+        Hexa.NET.ImGui.ImGui.TextUnformatted(visibleLabel);
+        changed |= Hexa.NET.ImGui.ImGui.ColorPicker3(label, ref preview, flags);
+
+        var red = NormalizeColorComponent(preview.X, maximumComponent);
+        var green = NormalizeColorComponent(preview.Y, maximumComponent);
+        var blue = NormalizeColorComponent(preview.Z, maximumComponent);
+        changed |= red != preview.X || green != preview.Y || blue != preview.Z;
+        if (changed)
+        {
+            value = new ModColor(red, green, blue);
+        }
+
+        return changed;
+    }
+
+    private static float NormalizeColorComponent(float value, float maximum) =>
+        float.IsFinite(value) ? System.Math.Clamp(value, 0.0f, maximum) : 0.0f;
+
     private static bool DrawRadioGroup(
         string label,
         ref int value,
@@ -408,12 +480,29 @@ public abstract partial class ModBase
             value = minimum;
         }
 
+        value = System.Math.Clamp(System.MathF.Round(value), minimum, maximum);
+
+        // Keep direct entry and a slider visible together within one item width.
+        // Zero input steps remove the +/- buttons without losing keyboard input.
+        var width = Hexa.NET.ImGui.ImGui.CalcItemWidth();
+        var spacing = Hexa.NET.ImGui.ImGui.GetStyle().ItemInnerSpacing.X;
+        var inputWidth = System.MathF.Min(
+            Hexa.NET.ImGui.ImGui.GetFontSize() * 6.0f, width * 0.4f);
+        Hexa.NET.ImGui.ImGui.SetNextItemWidth(inputWidth);
         var changed = Hexa.NET.ImGui.ImGui.InputFloat(
-            label,
-            ref value,
-            1.0f,
-            100.0f,
-            "%.0f");
+            $"##{label}.Input", ref value, 0.0f, 0.0f, "%.0f");
+        if (!float.IsFinite(value))
+        {
+            value = minimum;
+        }
+        value = System.Math.Clamp(System.MathF.Round(value), minimum, maximum);
+
+        Hexa.NET.ImGui.ImGui.SameLine(0.0f, spacing);
+        Hexa.NET.ImGui.ImGui.SetNextItemWidth(
+            System.MathF.Max(1.0f, width - inputWidth - spacing));
+        changed |= Hexa.NET.ImGui.ImGui.SliderFloat(
+            label, ref value, minimum, maximum, "",
+            Hexa.NET.ImGui.ImGuiSliderFlags.AlwaysClamp);
         value = System.Math.Clamp(System.MathF.Round(value), minimum, maximum);
         return changed || value != original;
     }
@@ -559,7 +648,7 @@ public abstract partial class ModBase
 
 // BEGIN copied source: Util/ModBase.Hotkey.cs
 // Source blob SHA-1: 9aba964758d536ae9257a9953438bf77a5b3af9a
-// Source commit: 7eadaa1411ca922a2fbbf34f067928275e4c53ec
+// Source commit: 537a2d80892067d2e33016d8c6f521f922b1013c
 // Module: Persistent keyboard/gamepad shortcuts and their ImGui editor.
 // Requires: Util/ModBase.cs and Util/ModBase.Config.cs from the same commit.
 // Add a binding with AddHotkeyConfig(), then call IsHotkeyPressed() once per frame.
@@ -922,7 +1011,7 @@ public sealed class Minimap : ModBase
     private const int TilePixels = 2048;
     private const float WorldToMapPixels = 6.4f;
     private const int TileSlotCount = 16;
-    private const string GuiResourcePath = "GUI/Minimap/MinimapPins.gui";
+    private const string GuiResourcePath = "GUI/Minimap/MinimapEnemies.gui";
     private const string GuiGameObjectName = "Minimap_GUI";
     private const string WindowName = "Minimap_Window";
     private const string GroupName = "Minimap_Group";
@@ -939,6 +1028,7 @@ public sealed class Minimap : ModBase
     private const string ChestMarkerPrefix = "Minimap_ChestMarker_";
     private const string LockedGateMarkerPrefix = "Minimap_LockedGateMarker_";
     private const string PinMarkerPrefix = "Minimap_PinMarker_";
+    private const string EnemyMarkerPrefix = "Minimap_EnemyMarker_";
     private const string MissionRangePrefix = "Minimap_MissionRange_";
     private const string EntranceMarkerPrefix = "Minimap_EntranceMarker_";
     private const string LadderMarkerPrefix = "Minimap_LadderMarker_";
@@ -948,6 +1038,7 @@ public sealed class Minimap : ModBase
     private const string TileNamePrefix = "Minimap_Tile_";
     private const long RetryDelayMilliseconds = 1000;
     private const long MarkerRefreshMilliseconds = 1000;
+    private const long EnemyRefreshMilliseconds = 200;
     private const long GuiLoadTimeoutMilliseconds = 10000;
     private const long GuiResolveTimeoutMilliseconds = 10000;
     private const int MaxGuiPlayObjectsToInspect = 512;
@@ -959,6 +1050,8 @@ public sealed class Minimap : ModBase
     private const int ChestMarkerCount = 16;
     private const int LockedGateMarkerCount = 24;
     private const int PinMarkerCount = 41; // Up to 40 objectives and one manual pin.
+    private const int EnemyMarkerCount = 64;
+    private const int MaxEnemyContextsToInspect = 1024;
     private const int MissionRangeCount = 16;
     private const int EntranceMarkerCount = 16;
     private const int LadderMarkerCount = 32;
@@ -983,6 +1076,7 @@ public sealed class Minimap : ModBase
     private const float CollectibleMarkerSize = 48.0f;
     private const float MissionMarkerSize = 48.0f;
     private const float FootprintMarkerSize = 9.0f;
+    private const float EnemyMarkerSize = 12.0f;
     private const float MaximumOffset = 16383.0f;
 
     // UV patterns in uvs000122.uvs, not cGUIMapListIcon.ICON_ID values.
@@ -1048,6 +1142,7 @@ public sealed class Minimap : ModBase
     private static readonly List<MarkerPosition> ChestPositions = new();
     private static readonly List<MarkerPosition> LockedGatePositions = new();
     private static readonly List<MarkerPosition> PinPositions = new();
+    private static readonly List<MarkerPosition> EnemyPositions = new();
     private static readonly List<MissionRange> MissionRanges = new();
     private static readonly List<MarkerPosition> EntrancePositions = new();
     private static readonly List<MarkerPosition> LadderPositions = new();
@@ -1073,6 +1168,7 @@ public sealed class Minimap : ModBase
     private readonly ModConfig<bool> _showCollectibles;
     private readonly ModConfig<bool> _showMissions;
     private readonly ModConfig<bool> _showPins;
+    private readonly ModConfig<bool> _showEnemies;
     private readonly ModConfig<bool> _showFootprints;
     private bool _isVisible = true;
 
@@ -1096,6 +1192,7 @@ public sealed class Minimap : ModBase
     private static via.gui.Texture[] _chestMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _lockedGateMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _pinMarkers = Array.Empty<via.gui.Texture>();
+    private static via.gui.Texture[] _enemyMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Circle[] _missionRanges = Array.Empty<via.gui.Circle>();
     private static via.gui.Texture[] _entranceMarkers = Array.Empty<via.gui.Texture>();
     private static via.gui.Texture[] _ladderMarkers = Array.Empty<via.gui.Texture>();
@@ -1107,10 +1204,12 @@ public sealed class Minimap : ModBase
     private static long _guiReadyAt;
     private static long _nextRetryTick;
     private static long _nextMarkerRefreshTick;
+    private static long _nextEnemyRefreshTick;
     private static int _errorReported;
     private static int _markerErrorReported;
     private static int _missionErrorReported;
     private static int _pinErrorReported;
+    private static int _enemyErrorReported;
     private static int _chestErrorReported;
     private static int _cleanupErrorReported;
 
@@ -1143,6 +1242,7 @@ public sealed class Minimap : ModBase
         _showCollectibles = AddBoolConfig("Show collectibles", true);
         _showMissions = AddBoolConfig("Show missions", true);
         _showPins = AddBoolConfig("Show map markers", true);
+        _showEnemies = AddBoolConfig("Show enemies", true);
         _showFootprints = AddBoolConfig("Show footprints", true);
     }
 
@@ -1164,6 +1264,7 @@ public sealed class Minimap : ModBase
         _markerErrorReported = 0;
         _missionErrorReported = 0;
         _pinErrorReported = 0;
+        _enemyErrorReported = 0;
         _chestErrorReported = 0;
         _cleanupErrorReported = 0;
         Instance.UnloadMod();
@@ -1230,6 +1331,7 @@ public sealed class Minimap : ModBase
                 }
                 _map = map;
                 _nextMarkerRefreshTick = 0;
+                _nextEnemyRefreshTick = 0;
             }
 
             if (Tiles.Count < _map.Tiles.Length)
@@ -1743,6 +1845,7 @@ public sealed class Minimap : ModBase
         var lockedGateMarkers = FindOptionalTextures(
             view, LockedGateMarkerPrefix, LockedGateMarkerCount);
         var pinMarkers = FindOptionalTextures(view, PinMarkerPrefix, PinMarkerCount);
+        var enemyMarkers = FindOptionalTextures(view, EnemyMarkerPrefix, EnemyMarkerCount);
         var missionRanges = new via.gui.Circle[MissionRangeCount];
         for (var index = 0; index < missionRanges.Length; ++index)
         {
@@ -1787,6 +1890,7 @@ public sealed class Minimap : ModBase
         _hiddenChestMarkers = hiddenChestMarkers;
         _lockedGateMarkers = lockedGateMarkers;
         _pinMarkers = pinMarkers;
+        _enemyMarkers = enemyMarkers;
         _missionRanges = missionRanges;
         _entranceMarkers = entranceMarkers;
         _ladderMarkers = ladderMarkers;
@@ -1859,6 +1963,7 @@ public sealed class Minimap : ModBase
                      _hiddenChestMarkers,
                      _lockedGateMarkers,
                      _pinMarkers,
+                     _enemyMarkers,
                      _entranceMarkers,
                      _ladderMarkers,
                      _collectibleMarkers,
@@ -1896,6 +2001,17 @@ public sealed class Minimap : ModBase
             texture.Color = color;
         }
 
+        foreach (var texture in _enemyMarkers)
+        {
+            texture.ColorPreset = _System.Guid.Empty;
+            var color = texture.Color;
+            color.r = 255;
+            color.g = 64;
+            color.b = 64;
+            color.a = 255;
+            texture.Color = color;
+        }
+
         Instance.Log(
             $"Native marker nodes: player={(IsAlive(_playerMarker) ? 1 : 0)}/1, " +
             $"walls={_wallMarkers.Length}/{WallMarkerCount}, " +
@@ -1903,6 +2019,7 @@ public sealed class Minimap : ModBase
             $"hiddenChests={_hiddenChestMarkers.Length}/{HiddenChestMarkerCount}, " +
             $"lockedDoors={_lockedGateMarkers.Length}/{LockedGateMarkerCount}, " +
             $"pins={_pinMarkers.Length}/{PinMarkerCount}, " +
+            $"enemies={_enemyMarkers.Length}/{EnemyMarkerCount}, " +
             $"missionRanges={_missionRanges.Length}/{MissionRangeCount}, " +
             $"entrances={_entranceMarkers.Length}/{EntranceMarkerCount}, " +
             $"ladders={_ladderMarkers.Length}/{LadderMarkerCount}, " +
@@ -2514,6 +2631,10 @@ public sealed class Minimap : ModBase
                 playerX, playerZ, left, top, width, height,
                 pixelsPerMeter, mapSign, cosine, sine);
 
+            UpdateEnemyMarkers(
+                playerX, playerZ, left, top, width, height,
+                pixelsPerMeter, mapSign, cosine, sine, markerScale, isCircle);
+
             if (Instance._showFootprints.Value)
             {
                 UpdateFootprintMarkers(
@@ -3062,6 +3183,105 @@ public sealed class Minimap : ModBase
     private static bool IsFinitePosition(via.vec3 position) =>
         float.IsFinite(position.x) && float.IsFinite(position.y) && float.IsFinite(position.z);
 
+    private static void RefreshEnemyMarkers(float playerX, float playerZ)
+    {
+        EnemyPositions.Clear();
+        var map = _map;
+        if (map is null) return;
+
+        var set = API.GetManagedSingletonT<app.SetManager>();
+        var info = API.GetManagedSingletonT<app.EnvironmentManager>()?.EnvInfoManager;
+        if (!IsAlive(set) || !IsAlive(info)) return;
+
+        // The game maintains this snapshot. Do not scan scene objects or keep
+        // native enemy references between frames: enemies can unload or despawn.
+        var contexts = set.getContextHolders(app.cContextIDInfo.OBJECT_TYPE.ENEMY);
+        if (!IsAlive(contexts)) return;
+        var count = Math.Min(contexts.Count, MaxEnemyContextsToInspect);
+        for (var index = 0; index < count; ++index)
+        {
+            var holder = contexts[index];
+            if (!IsAlive(holder) || !holder.Valid) continue;
+            var contextInfo = holder.Info;
+            if (!IsAlive(contextInfo) ||
+                !map.AreaFields.TryGetValue(contextInfo.AreaFixedID, out var floors)) continue;
+
+            var body = holder.Body;
+            var transform = IsAlive(body) && body.Valid ? body.Transform : null;
+            var character = holder.Chara;
+            var enemy = holder.Em;
+            if (!IsAlive(transform) || !IsAlive(character) || !IsAlive(enemy) ||
+                !character.IsPoped || character.isDead()) continue;
+            var health = character.HealthManager;
+            // Event actors can be active combat enemies too; do not exclude them.
+            if (!IsAlive(health) || health.Health <= 0) continue;
+
+            var position = transform.Position;
+            if (!IsFinitePosition(position) ||
+                !floors.Contains(info.getFieldOrder(contextInfo.AreaFixedID, position))) continue;
+            EnemyPositions.Add(new MarkerPosition(position.x, position.z));
+        }
+
+        // If the viewport contains more enemies than GUI slots, show the nearest.
+        EnemyPositions.Sort((first, second) =>
+        {
+            var ax = first.X - playerX;
+            var az = first.Z - playerZ;
+            var bx = second.X - playerX;
+            var bz = second.Z - playerZ;
+            return (ax * ax + az * az).CompareTo(bx * bx + bz * bz);
+        });
+    }
+
+    private static void UpdateEnemyMarkers(
+        float playerX, float playerZ, float left, float top,
+        float width, float height, float pixelsPerMeter,
+        float mapSign, float cosine, float sine, float markerScale, bool isCircle)
+    {
+        if (!Instance._showEnemies.Value || _enemyMarkers.Length == 0)
+        {
+            EnemyPositions.Clear();
+            _nextEnemyRefreshTick = 0;
+            SetVisible(_enemyMarkers, false);
+            return;
+        }
+
+        try
+        {
+            if (Environment.TickCount64 >= _nextEnemyRefreshTick)
+            {
+                RefreshEnemyMarkers(playerX, playerZ);
+                _nextEnemyRefreshTick = Environment.TickCount64 + EnemyRefreshMilliseconds;
+                Volatile.Write(ref _enemyErrorReported, 0);
+            }
+
+            var used = 0;
+            var size = EnemyMarkerSize * markerScale;
+            foreach (var position in EnemyPositions)
+            {
+                if (used >= _enemyMarkers.Length) break;
+                if (!TryProjectMarker(position,
+                        playerX, playerZ, left, top, width, height,
+                        pixelsPerMeter, mapSign, cosine, sine, size, isCircle,
+                        out var x, out var y)) continue;
+
+                // These slots use the native dot texture, without an icon atlas.
+                SetMarkerTexture(_enemyMarkers[used++], x, y, size, size, 0.0f);
+            }
+            HideUnused(_enemyMarkers, used);
+        }
+        catch (Exception exception)
+        {
+            EnemyPositions.Clear();
+            SetVisible(_enemyMarkers, false);
+            _nextEnemyRefreshTick = Environment.TickCount64 + RetryDelayMilliseconds;
+            if (Interlocked.Exchange(ref _enemyErrorReported, 1) == 0)
+            {
+                Instance.Log($"Enemy marker update will retry: {exception}", ModLogLevel.Error);
+            }
+        }
+    }
+
     private static MarkerPosition AttachedPin(via.vec3 position, uint pattern) =>
         // Native lib000121/122: 44px pin on a 64px icon, offset (11, -11).
         new(position.x, position.z, pattern, sizeScale: 44.0f / 64.0f,
@@ -3372,6 +3592,7 @@ public sealed class Minimap : ModBase
 
     private static void HideNativeMarkers()
     {
+        SetVisible(_enemyMarkers, false);
         SetVisible(_pinMarkers, false);
         SetVisible(_lockedGateMarkers, false);
         foreach (var circle in _missionRanges)
@@ -3630,6 +3851,8 @@ public sealed class Minimap : ModBase
         Tiles.Clear();
         ClearMapObjectPositions();
         _nextMarkerRefreshTick = 0;
+        EnemyPositions.Clear();
+        _nextEnemyRefreshTick = 0;
         _map = null;
     }
 
@@ -3676,6 +3899,7 @@ public sealed class Minimap : ModBase
         _hiddenChestMarkers = Array.Empty<via.gui.Texture>();
         _lockedGateMarkers = Array.Empty<via.gui.Texture>();
         _pinMarkers = Array.Empty<via.gui.Texture>();
+        _enemyMarkers = Array.Empty<via.gui.Texture>();
         _missionRanges = Array.Empty<via.gui.Circle>();
         _entranceMarkers = Array.Empty<via.gui.Texture>();
         _ladderMarkers = Array.Empty<via.gui.Texture>();
