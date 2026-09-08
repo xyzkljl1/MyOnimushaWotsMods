@@ -2,6 +2,22 @@
 // Requires: Util/ModBase.cs from the same committed Git revision.
 public delegate bool ModConfigRenderer<T>(string label, ref T value);
 
+public struct ModColor
+{
+    public ModColor(float red, float green, float blue)
+    {
+        Red = red;
+        Green = green;
+        Blue = blue;
+    }
+
+    public float Red { get; set; }
+
+    public float Green { get; set; }
+
+    public float Blue { get; set; }
+}
+
 public interface IModConfigEntry
 {
     string Key { get; }
@@ -134,6 +150,25 @@ public abstract partial class ModBase
                 Hexa.NET.ImGui.ImGui.Checkbox(label, ref value),
             key);
 
+    protected ModConfig<ModColor> AddColorConfig(
+        string name,
+        ModColor defaultValue,
+        float maximumComponent = 4.0f,
+        string key = null)
+    {
+        if (!float.IsFinite(maximumComponent) || maximumComponent <= 0.0f)
+        {
+            throw new System.ArgumentOutOfRangeException(nameof(maximumComponent));
+        }
+
+        return AddConfig(
+            name,
+            defaultValue,
+            (string label, ref ModColor value) =>
+                DrawColorPicker(label, ref value, maximumComponent),
+            key);
+    }
+
     protected ModConfig<int> AddRadioGroupConfig(
         string name,
         int defaultValue,
@@ -258,6 +293,43 @@ public abstract partial class ModBase
 
     protected bool DrawButton(string label, string id) =>
         Hexa.NET.ImGui.ImGui.Button($"{label}##{ModName}.{id}");
+
+    private static bool DrawColorPicker(
+        string label,
+        ref ModColor value,
+        float maximumComponent)
+    {
+        var preview = new System.Numerics.Vector3(
+            NormalizeColorComponent(value.Red, maximumComponent),
+            NormalizeColorComponent(value.Green, maximumComponent),
+            NormalizeColorComponent(value.Blue, maximumComponent));
+        var changed = preview.X != value.Red ||
+                      preview.Y != value.Green ||
+                      preview.Z != value.Blue;
+        var flags = Hexa.NET.ImGui.ImGuiColorEditFlags.Float |
+                    Hexa.NET.ImGui.ImGuiColorEditFlags.Hdr |
+                    Hexa.NET.ImGui.ImGuiColorEditFlags.PickerHueBar |
+                    Hexa.NET.ImGui.ImGuiColorEditFlags.NoSidePreview |
+                    Hexa.NET.ImGui.ImGuiColorEditFlags.NoLabel;
+        var idSeparator = label.IndexOf("##", System.StringComparison.Ordinal);
+        var visibleLabel = idSeparator < 0 ? label : label[..idSeparator];
+        Hexa.NET.ImGui.ImGui.TextUnformatted(visibleLabel);
+        changed |= Hexa.NET.ImGui.ImGui.ColorPicker3(label, ref preview, flags);
+
+        var red = NormalizeColorComponent(preview.X, maximumComponent);
+        var green = NormalizeColorComponent(preview.Y, maximumComponent);
+        var blue = NormalizeColorComponent(preview.Z, maximumComponent);
+        changed |= red != preview.X || green != preview.Y || blue != preview.Z;
+        if (changed)
+        {
+            value = new ModColor(red, green, blue);
+        }
+
+        return changed;
+    }
+
+    private static float NormalizeColorComponent(float value, float maximum) =>
+        float.IsFinite(value) ? System.Math.Clamp(value, 0.0f, maximum) : 0.0f;
 
     private static bool DrawRadioGroup(
         string label,
