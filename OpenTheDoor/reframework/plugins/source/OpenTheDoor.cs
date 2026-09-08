@@ -604,19 +604,19 @@ public sealed class OpenTheDoor : ModBase
     [ThreadStatic] private static System.Collections.Generic.Stack<ulong> _startingDoors;
     private readonly ModConfig<bool> _ordinaryDoors;
     private readonly ModConfig<bool> _breakableLockDoors;
+    private readonly ModConfig<bool> _breakableBarriers;
     private readonly ModConfig<bool> _threadMechanismDoors;
     private readonly ModConfig<bool> _maskDoors;
     private readonly ModConfig<bool> _otherSpecialDoors;
-    private readonly ModConfig<bool> _breakableBarriers;
 
     private OpenTheDoor() : base("OpenTheDoor", "1.0")
     {
         _ordinaryDoors = AddBoolConfig("Normal one-way Doors", true, key: "EnableOrdinaryDoors");
         _breakableLockDoors = AddBoolConfig("Breakable lock Doors", true, key: "EnableBreakableLockDoors");
+        _breakableBarriers = AddBoolConfig("One-way Oni Walls", true, key: "EnableBreakableBarriers");
         _threadMechanismDoors = AddBoolConfig("Thread mechanism Doors", true, key: "EnableThreadMechanismDoors");
         _maskDoors = AddBoolConfig("Mask item Doors", true, key: "EnableMaskDoors");
         _otherSpecialDoors = AddBoolConfig("Other special Doors", true, key: "EnableOtherSpecialDoors");
-        _breakableBarriers = AddBoolConfig("One-way breakable Barriers", true, key: "EnableBreakableBarriers");
     }
 
     [PluginEntryPoint]
