@@ -1,7 +1,6 @@
 using System;
 using REFrameworkNET;
 using REFrameworkNET.Attributes;
-using REFrameworkNET.Callbacks;
 using EffectType = app.user_data.ItemAdditionalParam.cGeneralParam.EFFECT_TYPE;
 
 // BEGIN copied source: Util/ModBase.cs
@@ -105,7 +104,11 @@ public sealed class ItemDescription : ModBase
     private static readonly ItemDescription Instance = new();
     private static readonly System.Collections.Generic.Dictionary<int, string>
         DetailCache = new();
-
+    private static readonly System.Collections.Generic.Dictionary<int, ManagedObject>
+        CostumeDescriptionCache = new();
+    private static MethodHook _costumeMessageHook;
+    private static (ulong Owner, int Category, int Index, bool Ready) _costumeSelection;
+    private static PendingCostumeUpdate _cachedCostumeUpdate;
     private readonly string _localizationDirectory;
     private via.Language _messageLanguage = via.Language.English;
     private readonly System.Collections.Generic.Dictionary<string, string>
@@ -121,6 +124,8 @@ public sealed class ItemDescription : ModBase
     private static PendingUpdate _medicineBagUpdate;
     [System.ThreadStatic]
     private static PendingUpdate _medicineBagOverviewUpdate;
+    [System.ThreadStatic]
+    private static PendingCostumeUpdate _costumeUpdate;
 
     private ItemDescription() : base("ItemDescription", "1.0")
     {
@@ -169,6 +174,7 @@ public sealed class ItemDescription : ModBase
 
         _resolvedText.Clear();
         DetailCache.Clear();
+        CostumeDescriptionCache.Clear();
     }
 
     private void LoadLanguage(via.Language language)
@@ -249,6 +255,16 @@ public sealed class ItemDescription : ModBase
     public static void Main()
     {
         Instance.LoadLocalization();
+        foreach (var method in TDB.Get().GetType(
+                     "ace.cGUIMessageManager`2<app.GUIID.ID,app.UIKey.TYPE>").GetMethods())
+        {
+            if (method.Name == "setMessage")
+            {
+                _costumeMessageHook = MethodHook.Create(method, false)
+                    .AddPre(BeforeCostumeMessage);
+                break;
+            }
+        }
         Instance.Log($"Loaded. Localization: {Instance._localizationDirectory}");
     }
 
@@ -262,6 +278,15 @@ public sealed class ItemDescription : ModBase
         _inventoryUpdate = default;
         _medicineBagUpdate = default;
         _medicineBagOverviewUpdate = default;
+        _costumeUpdate = default;
+        _costumeSelection = default;
+        _cachedCostumeUpdate = default;
+        _costumeMessageHook = null;
+        foreach (var message in CostumeDescriptionCache.Values)
+        {
+            message.Dispose();
+        }
+        CostumeDescriptionCache.Clear();
         Instance.ResetErrorReporting();
     }
 
@@ -379,6 +404,109 @@ public sealed class ItemDescription : ModBase
                 exception);
         }
     }
+
+    [MethodHook(
+        typeof(app.GUI030106.cCostumeList),
+        "onLateUpdate",
+        MethodHookType.Pre)]
+    public static PreHookResult BeforeCostumeUpdate(Span<ulong> args)
+    {
+        _costumeUpdate = default;
+        try
+        {
+            var list = GetHookArgument<app.GUI030106.cCostumeList>(args, 1);
+            if (list is null) return PreHookResult.Continue;
+            var index = unchecked((int)(list._FsgCostumeItemGrid?.SelectedIndex1D ?? uint.MaxValue));
+            var selection = (args[1], (int)list._SelectedCategory,
+                index, list._ReadyToLoadTexture);
+            if (selection != _costumeSelection)
+            {
+                _cachedCostumeUpdate = default;
+                var items = list._DisplayItemList;
+                if (selection.Item4 && index >= 0 && index < (items?.Count ?? 0))
+                {
+                    var message = GetCostumeDescription((int)items[index]._ItemID);
+                    _cachedCostumeUpdate = new PendingCostumeUpdate(
+                        AddressOf(list._TxtDescription), AddressOf(message));
+                }
+                _costumeSelection = selection;
+            }
+            _costumeUpdate = _cachedCostumeUpdate;
+        }
+        catch (Exception exception)
+        {
+            Instance.LogErrorOnce(
+                "Failed to prepare a costume description",
+                exception);
+        }
+
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(
+        typeof(app.GUI030106.cCostumeList),
+        "onLateUpdate",
+        MethodHookType.Post)]
+    public static void AfterCostumeUpdate(ref ulong returnValue) =>
+        _costumeUpdate = default;
+
+    private static PreHookResult BeforeCostumeMessage(Span<ulong> args)
+    {
+        // Only the active costume update can substitute its own description.
+        // No GUID lookup, item comparison, allocation or text write on this path.
+        var update = _costumeUpdate;
+        if (update.MessageAddress != 0 && args.Length > 3 &&
+            args[2] == update.TextAddress)
+        {
+            args[3] = update.MessageAddress;
+        }
+        return PreHookResult.Continue;
+    }
+
+    private static ManagedObject GetCostumeDescription(int itemId)
+    {
+        if (CostumeDescriptionCache.TryGetValue(itemId, out var cached))
+        {
+            return cached;
+        }
+
+        if (itemId is not (16820 or 28924)) return null;
+        var details = GetDetails(itemId);
+        if (string.IsNullOrWhiteSpace(details))
+        {
+            return null;
+        }
+
+        var messageId = via.gui.message.getGuidByName($"ItemDataText_IT_EXP_{itemId}");
+        var original = via.gui.message.get(
+            messageId,
+            Instance._messageLanguage)?.Trim();
+        var description = string.IsNullOrWhiteSpace(original)
+            ? details
+            : $"{original}\n{details}";
+        var managed = ace.cGUIMessageInfo.REFType.CreateInstance(0);
+        try
+        {
+            // CreateInstance can return a local-heap object. A C# reference alone
+            // does not keep it alive across game updates; retain it before caching.
+            // OnUnload's Dispose releases this engine-side reference.
+            managed.Globalize();
+            var message = managed.As<ace.cGUIMessageInfo>();
+            // The string overload only adds a parameter; it does not clear MsgID.
+            message.setMessageInfo(_System.Guid.Empty);
+            message.setMessageInfo(description);
+            CostumeDescriptionCache[itemId] = managed;
+            return managed;
+        }
+        catch
+        {
+            managed?.Dispose();
+            throw;
+        }
+    }
+
+    private static ulong AddressOf(object value) =>
+        value is IProxyable proxy ? proxy.GetAddress() : 0;
 
     private static PendingUpdate CaptureDirectItem(System.ReadOnlySpan<ulong> args)
     {
@@ -515,6 +643,13 @@ public sealed class ItemDescription : ModBase
         {
             DetailCache[itemId] = string.Empty;
             return string.Empty;
+        }
+
+        if (!DynamicPlaceholderRegex.IsMatch(template))
+        {
+            var staticDetails = template.Trim();
+            DetailCache[itemId] = staticDetails;
+            return staticDetails;
         }
 
         var source = app.GA.VariousData?.ItemAdditionalParam;
@@ -683,4 +818,7 @@ public sealed class ItemDescription : ModBase
     private readonly record struct PendingUpdate(
         ulong OwnerAddress,
         int ItemId);
+    private readonly record struct PendingCostumeUpdate(
+        ulong TextAddress,
+        ulong MessageAddress);
 }
