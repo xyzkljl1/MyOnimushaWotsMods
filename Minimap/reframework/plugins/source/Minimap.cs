@@ -1686,6 +1686,25 @@ public sealed class Minimap : ModBase
             return false;
         }
 
+        // The HUD object stays logically visible during some cinematics. Follow
+        // its hide reasons instead: dialogue and special events do not necessarily
+        // register as a playing timeline/movie in AppEventManager.
+        var hideConditions = guiManager.ImmediateHideConditions;
+        if (HasHideCondition(app.GUIDefApp.IMMEDIATE_HIDE_CONDITIONS.EVENT_CUT) ||
+            HasHideCondition(app.GUIDefApp.IMMEDIATE_HIDE_CONDITIONS.DIALOGUE) ||
+            HasHideCondition(app.GUIDefApp.IMMEDIATE_HIDE_CONDITIONS.LOSING_EVENT) ||
+            HasHideCondition(app.GUIDefApp.IMMEDIATE_HIDE_CONDITIONS.DOG_EVENT))
+        {
+            return false;
+        }
+
+        bool HasHideCondition(app.GUIDefApp.IMMEDIATE_HIDE_CONDITIONS condition)
+        {
+            var index = (int)condition;
+            return hideConditions != null && (uint)index < (uint)hideConditions.Length &&
+                hideConditions[index];
+        }
+
         var rawHost = (guiManager as IObject)?.Call(
             "getGUI", (int)app.GUIID.ID.UI020301) as ManagedObject;
         root = (rawHost?.GetField("_Root") as ManagedObject)?.As<via.gui.View>();
