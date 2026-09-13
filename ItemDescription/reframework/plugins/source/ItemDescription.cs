@@ -107,6 +107,11 @@ public sealed class ItemDescription : ModBase
     private static readonly System.Collections.Generic.Dictionary<int, ManagedObject>
         CostumeDescriptionCache = new();
     private static MethodHook _costumeMessageHook;
+    private static MethodHook _costumeUpdateHook;
+    private static Action<MethodHook, MethodHook.PreHookDelegate> _removePreHook;
+    private static Action<MethodHook, MethodHook.PostHookDelegate> _removePostHook;
+    private static bool _costumeSubscribed;
+    private static ulong _costumeOwner, _activeCostumeList;
     private static (ulong Owner, int Category, int Index, bool Ready) _costumeSelection;
     private static PendingCostumeUpdate _cachedCostumeUpdate;
     private readonly string _localizationDirectory;
@@ -255,22 +260,23 @@ public sealed class ItemDescription : ModBase
     public static void Main()
     {
         Instance.LoadLocalization();
-        foreach (var method in TDB.Get().GetType(
-                     "ace.cGUIMessageManager`2<app.GUIID.ID,app.UIKey.TYPE>").GetMethods())
+        try
         {
-            if (method.Name == "setMessage")
-            {
-                _costumeMessageHook = MethodHook.Create(method, false)
-                    .AddPre(BeforeCostumeMessage);
-                break;
-            }
+            // A script reload can happen while the screen is already open.
+            // Check once here; never poll visibility in a frame callback.
+            var manager = API.GetManagedSingletonT<app.GUIManager>();
+            if (manager != null && manager.isVisibleGUIApp(app.GUIID.ID.UI030106))
+                SubscribeCostume(((manager as IObject)?.Call("getGUI",
+                    (int)app.GUIID.ID.UI030106) as ManagedObject)?.As<app.GUI030106>());
         }
+        catch (Exception exception) { Instance.LogErrorOnce("Failed to resume costume description callbacks", exception); }
         Instance.Log($"Loaded. Localization: {Instance._localizationDirectory}");
     }
 
     [PluginExitPoint]
     public static void OnUnload()
     {
+        UnsubscribeCostume();
         DetailCache.Clear();
         Instance._gameMessageNames.Clear();
         Instance._resolvedText.Clear();
@@ -282,6 +288,9 @@ public sealed class ItemDescription : ModBase
         _costumeSelection = default;
         _cachedCostumeUpdate = default;
         _costumeMessageHook = null;
+        _costumeUpdateHook = null;
+        _removePreHook = null;
+        _removePostHook = null;
         foreach (var message in CostumeDescriptionCache.Values)
         {
             message.Dispose();
@@ -405,13 +414,74 @@ public sealed class ItemDescription : ModBase
         }
     }
 
-    [MethodHook(
-        typeof(app.GUI030106.cCostumeList),
-        "onLateUpdate",
-        MethodHookType.Pre)]
+    [MethodHook(typeof(app.GUI030106), "onOpen", MethodHookType.Pre)]
+    public static PreHookResult BeforeCostumeOpen(Span<ulong> args)
+    {
+        try { SubscribeCostume(GetHookArgument<app.GUI030106>(args, 1)); }
+        catch (Exception exception) { Instance.LogErrorOnce("Failed to subscribe costume description callbacks", exception); }
+        return PreHookResult.Continue;
+    }
+
+    [MethodHook(typeof(app.GUI030106), "onClose", MethodHookType.Pre)]
+    public static PreHookResult BeforeCostumeClose(Span<ulong> args)
+    {
+        if (args.Length > 1 && args[1] == _costumeOwner) UnsubscribeCostume();
+        return PreHookResult.Continue;
+    }
+
+    private static void SubscribeCostume(app.GUI030106 window)
+    {
+        if (window == null || (_costumeSubscribed && AddressOf(window) == _costumeOwner)) return;
+        UnsubscribeCostume();
+        var list = AddressOf(window._CostumeList);
+        if (list == 0) return;
+
+        // MethodHook.Create shares hooks between mods. Its event removers are
+        // internal in this framework version; remove only our own delegates.
+        _removePreHook ??= HookRemover<Action<MethodHook, MethodHook.PreHookDelegate>>("remove_OnPreStart");
+        _removePostHook ??= HookRemover<Action<MethodHook, MethodHook.PostHookDelegate>>("remove_OnPostStart");
+        _costumeUpdateHook ??= MethodHook.Create(app.GUI030106.cCostumeList.REFType.GetMethod("onLateUpdate"), false);
+        if (_costumeMessageHook == null)
+        {
+            foreach (var method in TDB.Get().GetType(
+                         "ace.cGUIMessageManager`2<app.GUIID.ID,app.UIKey.TYPE>").GetMethods())
+                if (method.Name == "setMessage") { _costumeMessageHook = MethodHook.Create(method, false); break; }
+            if (_costumeMessageHook == null) throw new MissingMethodException("Costume message manager setMessage");
+        }
+        _costumeOwner = AddressOf(window);
+        _activeCostumeList = list;
+        _costumeSubscribed = true;
+        try
+        {
+            _costumeUpdateHook.AddPre(BeforeCostumeUpdate).AddPost(AfterCostumeUpdate);
+            _costumeMessageHook.AddPre(BeforeCostumeMessage);
+            Instance.Log("Costume description callbacks subscribed.");
+        }
+        catch { UnsubscribeCostume(); throw; }
+    }
+
+    private static T HookRemover<T>(string name) where T : Delegate =>
+        (typeof(MethodHook).GetMethod(name,
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic) ??
+         throw new MissingMethodException(typeof(MethodHook).FullName, name)).CreateDelegate<T>();
+
+    private static void UnsubscribeCostume()
+    {
+        if (!_costumeSubscribed) return;
+        _costumeSubscribed = false;
+        _costumeOwner = _activeCostumeList = 0;
+        _costumeSelection = default;
+        _cachedCostumeUpdate = _costumeUpdate = default;
+        _removePreHook(_costumeUpdateHook, BeforeCostumeUpdate);
+        _removePostHook(_costumeUpdateHook, AfterCostumeUpdate);
+        _removePreHook(_costumeMessageHook, BeforeCostumeMessage);
+        Instance.Log("Costume description callbacks unsubscribed.");
+    }
+
     public static PreHookResult BeforeCostumeUpdate(Span<ulong> args)
     {
         _costumeUpdate = default;
+        if (!_costumeSubscribed || args.Length < 2 || args[1] != _activeCostumeList) return PreHookResult.Continue;
         try
         {
             var list = GetHookArgument<app.GUI030106.cCostumeList>(args, 1);
@@ -443,10 +513,6 @@ public sealed class ItemDescription : ModBase
         return PreHookResult.Continue;
     }
 
-    [MethodHook(
-        typeof(app.GUI030106.cCostumeList),
-        "onLateUpdate",
-        MethodHookType.Post)]
     public static void AfterCostumeUpdate(ref ulong returnValue) =>
         _costumeUpdate = default;
 
